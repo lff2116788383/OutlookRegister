@@ -1,3 +1,4 @@
+import random
 from patchright.sync_api import sync_playwright
 from services import EzCaptcha, ProxyManager
 from .base_controller import BaseBrowserController
@@ -33,50 +34,92 @@ class PatchrightController(BaseBrowserController):
     def handle_captcha(self, page):
         try:
             iframe = page.locator("iframe#enforcementFrame")
-            if iframe.count() == 0:
-                return True
+            if iframe.count() > 0:
+                logger.info("Detected FunCaptcha challenge in patchright")
+                if self.config.api_keys.ezcaptcha:
+                    src = iframe.get_attribute("src")
+                    website_key = "B7D8911C-5CC8-A9A3-35B0-554ACEE604DA"
+                    if src and "pk=" in src:
+                        website_key = src.split("pk=")[1].split("&")[0]
 
-            print("[Info] - 检测到 FunCaptcha 验证码，准备调用 EzCaptcha API")
-            if not self.config.api_keys.ezcaptcha:
-                print("[Error] - 未配置 ezcaptcha API Key，无法完成验证码识别")
-                return False
+                    ezcaptcha = EzCaptcha(self.config.api_keys.ezcaptcha)
+                    token = ezcaptcha.solve_funcaptcha("https://outlook.live.com", website_key)
+                    if not token:
+                        logger.error("Failed to acquire EzCaptcha token")
+                        return False
 
-            src = iframe.get_attribute("src")
-            website_key = "B7D8911C-5CC8-A9A3-35B0-554ACEE604DA"
-            if src and "pk=" in src:
-                website_key = src.split("pk=")[1].split("&")[0]
+                    logger.info("Injecting EzCaptcha token into patchright page")
+                    page.evaluate(
+                        '''(token) => {
+                            var input = document.createElement("input");
+                            input.type = "hidden";
+                            input.name = "FC-Token";
+                            input.id = "FC-Token";
+                            input.value = token;
+                            document.body.appendChild(input);
 
-            ezcaptcha = EzCaptcha(self.config.api_keys.ezcaptcha)
-            token = ezcaptcha.solve_funcaptcha("https://outlook.live.com", website_key)
-            if not token:
-                print("[Error] - 未能获取到 EzCaptcha Token")
-                return False
+                            window.parent.postMessage(JSON.stringify({
+                                eventId: "challenge-complete",
+                                payload: { sessionToken: token }
+                            }), "*");
+                        }''',
+                        token,
+                    )
+                    page.wait_for_timeout(5000)
+                else:
+                    logger.info("EzCaptcha key missing, fallback to legacy patchright captcha flow")
+                    frame1 = page.frame_locator('iframe[title="验证质询"]')
+                    frame2 = frame1.frame_locator('iframe[style*="display: block"]')
 
-            print("[Info] - 获取到验证码 Token，注入页面...")
-            page.evaluate(
-                '''(token) => {
-                    var input = document.createElement("input");
-                    input.type = "hidden";
-                    input.name = "FC-Token";
-                    input.id = "FC-Token";
-                    input.value = token;
-                    document.body.appendChild(input);
+                    for _ in range(0, self.max_captcha_retries + 1):
+                        page.wait_for_timeout(200)
+                        loc = frame2.locator('[aria-label="可访问性挑战"]')
+                        box = loc.bounding_box()
+                        if not box:
+                            logger.error("Legacy captcha accessibility challenge not found")
+                            return False
+                        x = box['x'] + box['width'] / 2 + random.randint(-10, 10)
+                        y = box['y'] + box['height'] / 2 + random.randint(-10, 10)
+                        page.mouse.click(x, y)
 
-                    window.parent.postMessage(JSON.stringify({
-                        eventId: "challenge-complete",
-                        payload: { sessionToken: token }
-                    }), "*");
-                }''',
-                token,
-            )
-            page.wait_for_timeout(5000)
+                        loc2 = frame2.locator('[aria-label="再次按下"]')
+                        box2 = loc2.bounding_box()
+                        if not box2:
+                            logger.error("Legacy captcha second press target not found")
+                            return False
+                        x = box2['x'] + box2['width'] / 2 + random.randint(-20, 20)
+                        y = box2['y'] + box2['height'] / 2 + random.randint(-13, 13)
+                        page.mouse.click(x, y)
+
+                        try:
+                            page.locator('.draw').wait_for(state="detached")
+                            try:
+                                page.locator('[role="status"][aria-label="正在加载..."]').wait_for(timeout=5000)
+                                page.wait_for_timeout(8000)
+                                if page.get_by_text('一些异常活动').count() or page.get_by_text('此站点正在维护，暂时无法使用，请稍后重试。').count() > 0:
+                                    logger.error("Rate limit after legacy patchright captcha pass")
+                                    return False
+                                elif frame2.locator('[aria-label="可访问性挑战"]').count() > 0:
+                                    continue
+                                break
+                            except Exception:
+                                if page.get_by_text('取消').count() > 0:
+                                    break
+                                frame1.get_by_text("请再试一次").wait_for(timeout=15000)
+                                continue
+                        except Exception:
+                            if page.get_by_text('取消').count() > 0:
+                                break
+                            return False
+                    else:
+                        return False
 
             if page.get_by_text("一些异常活动").count() or page.get_by_text("此站点正在维护").count() > 0:
-                print("[Error: Rate limit] - 正常通过验证码，但当前IP注册频率过快。")
+                logger.error("Rate limited or site under maintenance after captcha handling")
                 return False
             return True
         except Exception as exc:
-            print(f"[Error: Captcha] - 处理验证码时发生错误: {exc}")
+            logger.error("Patchright captcha handling error: %s", exc)
             return False
 
     def get_thread_page(self):

@@ -1,6 +1,7 @@
 {
     "choose_browser": "patchright",
     "proxy": "http://127.0.0.1:7897",
+    "proxy_rotation_url": "",
     "api_keys": {
         "ezcaptcha": "",
         "sms_activate": ""

@@ -130,12 +130,15 @@ class MainWindow(QMainWindow):
         self.save_button = QPushButton("保存配置")
         self.reload_button = QPushButton("重新加载")
         self.prepare_button = QPushButton("准备任务")
-        self.start_button = QPushButton("受控启动")
+        self.start_button = QPushButton("启动任务")
+        self.stop_button = QPushButton("停止任务")
+        self.stop_button.setEnabled(False)
         action_layout.addWidget(self.save_button)
         action_layout.addWidget(self.reload_button)
         action_layout.addWidget(self.prepare_button)
         action_layout.addStretch(1)
         action_layout.addWidget(self.start_button)
+        action_layout.addWidget(self.stop_button)
 
         self.status_label = QLabel("就绪")
         self.status_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
@@ -150,6 +153,7 @@ class MainWindow(QMainWindow):
         self.reload_button.clicked.connect(self._load_config_to_form)
         self.prepare_button.clicked.connect(self._prepare_tasks)
         self.start_button.clicked.connect(self._start_task)
+        self.stop_button.clicked.connect(self._stop_task)
 
     def _build_log_tab(self) -> None:
         layout = QVBoxLayout(self.log_tab)
@@ -357,7 +361,7 @@ class MainWindow(QMainWindow):
         logger.info("Task database reinitialized from GUI")
 
     def _create_task_callable(self):
-        def task() -> None:
+        def task(is_cancelled) -> None:
             config = AppConfig.load()
             db = TaskDB()
             db.reset_in_progress_tasks()
@@ -375,6 +379,10 @@ class MainWindow(QMainWindow):
                 success_count = 0
                 failed_count = 0
                 for task_id, email, password in pending_tasks:
+                    if is_cancelled():
+                        logger.info("任务已被用户手动停止")
+                        break
+                        
                     db.update_task_status(task_id, "in_progress")
                     if runner.process_single_flow_with_credentials(email, password):
                         db.update_task_status(task_id, "success")
@@ -400,15 +408,27 @@ class MainWindow(QMainWindow):
         self.task_controller.log_message.connect(self._append_log)
         self.task_controller.task_finished.connect(self._handle_task_finished)
         self.task_controller.start()
+        
+        self.start_button.setEnabled(False)
+        self.stop_button.setEnabled(True)
         self.status_label.setText("任务已启动")
         self.tabs.setCurrentWidget(self.log_tab)
+
+    def _stop_task(self) -> None:
+        if self.task_controller is not None:
+            self.status_label.setText("正在停止任务，请等待当前操作完成...")
+            self.stop_button.setEnabled(False)
+            self.task_controller.stop()
 
     def _handle_task_finished(self, success: bool, message: str) -> None:
         self.status_label.setText(message)
         if success:
             QMessageBox.information(self, "完成", message)
         else:
-            QMessageBox.warning(self, "失败", message)
+            QMessageBox.warning(self, "停止/失败", message)
+            
+        self.start_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
         self.task_controller = None
         self._refresh_result_files()
         self._load_log_file()

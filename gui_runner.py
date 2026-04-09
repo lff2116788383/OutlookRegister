@@ -29,17 +29,23 @@ class TaskWorker(QObject):
     def __init__(self, task_callable: Callable[[], None]):
         super().__init__()
         self.task_callable = task_callable
+        self.is_cancelled = False
 
     def run(self) -> None:
         logger = GuiLogEmitter(self.log_message.emit)
         try:
             with redirect_stdout(logger), redirect_stderr(logger):
-                self.task_callable()
-            self.finished.emit(True, "任务执行完成")
+                self.task_callable(lambda: self.is_cancelled)
+            if self.is_cancelled:
+                self.finished.emit(False, "任务已被手动停止")
+            else:
+                self.finished.emit(True, "任务执行完成")
         except Exception:
             self.log_message.emit(traceback.format_exc())
             self.finished.emit(False, "任务执行失败")
-
+            
+    def stop(self) -> None:
+        self.is_cancelled = True
 
 class TaskThreadController(QObject):
     log_message = Signal(str)
@@ -58,6 +64,9 @@ class TaskThreadController(QObject):
 
     def start(self) -> None:
         self.thread.start()
+
+    def stop(self) -> None:
+        self.worker.stop()
 
     def _handle_finished(self, success: bool, message: str) -> None:
         self.task_finished.emit(success, message)

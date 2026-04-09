@@ -66,31 +66,87 @@ class BaseBrowserController(ABC):
 
         try:
             logger.info(f"Navigating to outlook registration for {email}@outlook.com")
-            page.goto("https://outlook.live.com/mail/0/?prompt=create_account", timeout=30000, wait_until="domcontentloaded")
-            
-            # Use more robust selector
-            consent_btn = page.get_by_text('同意并继续')
-            if consent_btn.count() > 0:
-                consent_btn.wait_for(timeout=10000)
-                page.wait_for_timeout(0.1 * self.wait_time)
-                consent_btn.click(timeout=10000)
-            
+            page.goto("https://outlook.live.com/mail/0/?prompt=create_account", timeout=20000, wait_until="domcontentloaded")
+            page.get_by_text('同意并继续').wait_for(timeout=30000)
             start_time = time.time()
+            page.wait_for_timeout(0.1 * self.wait_time)
+            page.get_by_text('同意并继续').click(timeout=30000)
 
         except Exception as e:
             logger.error(f"Failed to enter registration page: {e}")
             return False
+
+        page.wait_for_timeout(1500)
         
         try:
             logger.info(f"Filling account details for {email}")
-            page.locator('[aria-label="新建电子邮件"]').type(email, delay=0.006 * self.wait_time, timeout=10000)
-            page.locator('[data-testid="primaryButton"]').click(timeout=5000)
-            
+
+            def first_visible_locator(candidates, timeout=20000):
+                deadline = time.time() + timeout / 1000
+                while time.time() < deadline:
+                    for selector in candidates:
+                        locator = page.locator(selector)
+                        try:
+                            handles = locator.element_handles()
+                            if handles:
+                                try:
+                                    handles[0].wait_for_element_state("visible", timeout=500)
+                                except Exception:
+                                    pass
+                                logger.info("Matched selector: %s", selector)
+                                return locator.first
+                        except Exception:
+                            continue
+                    page.wait_for_timeout(300)
+                raise TimeoutError(f"No visible locator matched: {candidates}")
+
+            email_input = first_visible_locator(
+                [
+                    '[aria-label="新建电子邮件"]',
+                    '#MemberName',
+                    'input[name="MemberName"]',
+                    '[aria-label="New email"]',
+                    'input[placeholder="name@example.com"]',
+                    'input[placeholder*="@outlook.com"]',
+                    'input[type="email"]',
+                    'input[aria-describedby*="MemberName"]',
+                ]
+            )
+            email_input.type(email, delay=0.006 * self.wait_time, timeout=10000)
+
+            next_btn = first_visible_locator(
+                [
+                    '[data-testid="primaryButton"]',
+                    '#iSignupAction',
+                    'button[type="submit"]',
+                    'input[type="submit"]',
+                ],
+                timeout=10000,
+            )
+            next_btn.click(timeout=5000)
+
             page.wait_for_timeout(0.02 * self.wait_time)
-            page.locator('[type="password"]').type(password, delay=0.004 * self.wait_time, timeout=10000)
-            
+
+            pwd_input = first_visible_locator(
+                [
+                    '[type="password"]',
+                    '#PasswordInput',
+                    'input[name="Password"]',
+                ]
+            )
+            pwd_input.type(password, delay=0.004 * self.wait_time, timeout=10000)
+
             page.wait_for_timeout(0.02 * self.wait_time)
-            page.locator('[data-testid="primaryButton"]').click(timeout=5000)
+            next_btn = first_visible_locator(
+                [
+                    '[data-testid="primaryButton"]',
+                    '#iSignupAction',
+                    'button[type="submit"]',
+                    'input[type="submit"]',
+                ],
+                timeout=10000,
+            )
+            next_btn.click(timeout=5000)
             
             page.wait_for_timeout(0.03 * self.wait_time)
             page.locator('[name="BirthYear"]').fill(year, timeout=10000)
@@ -130,40 +186,40 @@ class BaseBrowserController(ABC):
             # SMS Verification handling
             if page.get_by_text('添加电话号码').count() > 0 or page.locator('[id="PhoneNum"]').count() > 0:
                 logger.info(f"SMS verification required for {email}")
-                from services import SmsActivate
                 if not self.sms_api_key:
-                    logger.error("SMS Activate key missing, cannot proceed with verification")
+                    logger.info("SMS Activate key missing, fallback to legacy behavior and mark as failed")
                     return False
-                
+
+                from services import SmsActivate
                 sms = SmsActivate(self.sms_api_key)
                 phone_id, phone_num = sms.get_number(service='mm', country=0)
                 if not phone_num:
                     logger.error("Failed to get phone number from SMS Activate")
                     return False
-                
+
                 logger.info(f"Using phone number: {phone_num}")
                 phone_input = page.locator('input[type="tel"]')
                 if phone_input.count() == 0:
                     phone_input = page.locator('[id="PhoneNum"]')
                 phone_input.fill(phone_num)
-                page.locator('[id="iSignupAction"]').click(timeout=10000) 
-                
+                page.locator('[id="iSignupAction"]').click(timeout=10000)
+
                 logger.info("Waiting for SMS code...")
                 code = None
-                for _ in range(20): # 20 * 5s = 100s
+                for _ in range(20):
                     page.wait_for_timeout(5000)
                     code = sms.get_status(phone_id)
                     if code:
                         break
-                
+
                 if code:
                     logger.info(f"Received SMS code: {code}")
                     page.locator('input[id="PhoneProofCode"]').fill(code)
                     page.locator('[id="iSignupAction"]').click(timeout=10000)
-                    sms.set_status(phone_id, 6) # Confirm success
+                    sms.set_status(phone_id, 6)
                 else:
                     logger.error("SMS code timeout")
-                    sms.set_status(phone_id, 8) # Cancel
+                    sms.set_status(phone_id, 8)
                     return False
 
             # Captcha handling

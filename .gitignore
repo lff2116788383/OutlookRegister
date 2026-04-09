@@ -12,6 +12,9 @@ env/
 Results/*.txt
 Results/*.log
 Results/app.log
+Results/*.db
+Results/*.db-shm
+Results/*.db-wal
 playwright-report/
 .pytest_cache/
 .mypy_cache/
