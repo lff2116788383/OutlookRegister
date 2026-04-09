@@ -1,105 +1,76 @@
-import time
-import json
-import os
+from __future__ import annotations
+
 from concurrent.futures import ThreadPoolExecutor
-from get_token import get_access_token
-from controllers.patchright_controller import PatchrightController
-from controllers.playwright_controller import PlaywrightController
-from utils import random_email, generate_strong_password 
+
+from app_config import AppConfig, ensure_runtime_dirs
+from controller_factory import build_controller
+from database import TaskDB
+from logger import logger
+from utils import generate_strong_password, random_email
 
 
-# --- 不确定有无帮助 ---
-# 1. CDP 检测：wait_for_timeout --> time.sleep()
-# 2. 使用 launch_persistent_context 
-# 3. 避免短时间访问
-# 4. 模拟真人轨迹
-
-def process_single_flow(controller):
+def process_single_task(controller, task_id: int, email: str, password: str, db: TaskDB) -> bool:
     page = None
-
     try:
+        db.update_task_status(task_id, "in_progress")
         page = controller.get_thread_page()
-
-        email = random_email()
-        password = generate_strong_password()
-
-        # 调用 controller 特定的注册方法
         result = controller.outlook_register(page, email, password)
 
-        if result and not controller.enable_oauth2:
+        if result:
+            db.update_task_status(task_id, "success")
             return True
-        elif not result:
-            return False
 
-        token_result = get_access_token(page, email)
-        if token_result[0]:
-            refresh_token, access_token, expire_at =  token_result
-            with open(r'Results\outlook_token.txt', 'a') as f2:
-                f2.write(f"{email}@outlook.com---{password}---{refresh_token}---{access_token}---{expire_at}\n") 
-            print(f'[Success: TokenAuth] - {email}@outlook.com')
-            return True
-        else:
-            return False
-
-    except Exception as e:
-        print(e)
+        db.update_task_status(task_id, "failed", "Registration flow returned False")
         return False
-    
+    except Exception as exc:
+        logger.exception("Task %s failed: %s", task_id, exc)
+        db.update_task_status(task_id, "failed", str(exc))
+        return False
     finally:
-
         controller.clean_up(page, "done_browser")
 
-def run_concurrent_flows(controller, concurrent_flows=10, max_tasks=100):
-    task_counter = 0
-    succeeded_tasks = 0
-    failed_tasks = 0
 
-    with ThreadPoolExecutor(max_workers=concurrent_flows) as executor:
-        running_futures = set()
+def initialize_tasks(db: TaskDB, config: AppConfig) -> None:
+    stats = db.get_stats()
+    total_existing = sum(stats.values())
+    if total_existing >= config.max_tasks:
+        return
 
-        while task_counter < max_tasks or len(running_futures) > 0:
-            done_futures = {f for f in running_futures if f.done()}
-            for future in done_futures:
-                try:
-                    if future.result():
-                        succeeded_tasks += 1
-                    else:
-                        failed_tasks += 1
-                except Exception as e:
-                    failed_tasks += 1
-                    print(e)
-                running_futures.remove(future)
+    missing = config.max_tasks - total_existing
+    logger.info("Initializing %s new tasks in database", missing)
+    for _ in range(missing):
+        db.create_task(random_email(), generate_strong_password())
 
-            while len(running_futures) < concurrent_flows and task_counter < max_tasks:
-                new_future = executor.submit(process_single_flow, controller)
-                running_futures.add(new_future)
-                task_counter += 1
-                if task_counter % (max_tasks // 2) == 0:
-                    print(f"已提交 {task_counter}/{max_tasks} 任务.")
 
-            time.sleep(0.5)
+def run_cli() -> None:
+    config = AppConfig.load()
+    ensure_runtime_dirs()
+    db = TaskDB()
 
-    print(f"\n[Result] - 共: {max_tasks}, 成功 {succeeded_tasks}, 失败 {failed_tasks}")
+    logger.info("Starting OutlookRegister production mode")
+    initialize_tasks(db, config)
+    db.reset_in_progress_tasks()
+    controller = build_controller(config)
+
+    try:
+        with ThreadPoolExecutor(max_workers=config.concurrent_flows) as executor:
+            while True:
+                tasks = db.get_pending_tasks(limit=config.concurrent_flows)
+                if not tasks:
+                    break
+
+                futures = [
+                    executor.submit(process_single_task, controller, task_id, email, password, db)
+                    for task_id, email, password in tasks
+                ]
+                for future in futures:
+                    future.result()
+
+                logger.info("Progress stats: %s", db.get_stats())
+    finally:
+        controller.clean_up(type="all_browser")
+        logger.info("OutlookRegister finished. Final stats: %s", db.get_stats())
 
 
 if __name__ == "__main__":
-
-    with open('config.json', 'r', encoding='utf-8') as f:
-        data = json.load(f) 
-    os.makedirs("Results", exist_ok=True)
-
-    max_tasks = data["max_tasks"]
-    concurrent_flows = data["concurrent_flows"]
-
-    if data["choose_browser"] =="patchright":
-        selected_controller = PatchrightController()
-    elif data["choose_browser"] =="playwright":
-        selected_controller = PlaywrightController()
-    else:
-        print("不支持的浏览器类型，填写patchright或者playwright")
-  
-
-    try:
-        run_concurrent_flows(selected_controller, concurrent_flows, max_tasks)
-    finally:
-        selected_controller.clean_up(type="all_browser")
+    run_cli()

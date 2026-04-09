@@ -1,29 +1,40 @@
+from __future__ import annotations
+
 import random
-import string
 import secrets
+import string
 
-def random_email(length=random.randint(12,14)):
+from faker import Faker
 
-    first_char = random.choice(string.ascii_lowercase)
+_FAKE = Faker("en_US")
+_PASSWORD_SPECIALS = "!@#$%^&*"
 
-    other_chars = []
-    for _ in range(length - 1):  
-        if random.random() < 0.07:  
-            other_chars.append(random.choice(string.digits))
-        else: 
-            other_chars.append(random.choice(string.ascii_lowercase))
 
-    return first_char + ''.join(other_chars)
+def random_email() -> str:
+    firstname = _FAKE.first_name()
+    lastname = _FAKE.last_name()
+    year = str(random.randint(1970, 2002))
 
-def generate_strong_password(length=random.randint(11, 15)):
+    formats = [
+        f"{firstname}{lastname}{year}",
+        f"{firstname}.{lastname}{year}",
+        f"{firstname}{year}",
+        f"{lastname}{firstname}{year}",
+    ]
+    email = random.choice(formats).lower()
+    return "".join(char for char in email if char.isalnum() or char == ".")
 
-    chars = string.ascii_letters + string.digits + "!@#$%^&*"
+
+def generate_strong_password(length: int | None = None) -> str:
+    password_length = length or random.randint(11, 15)
+    chars = string.ascii_letters + string.digits + _PASSWORD_SPECIALS
 
     while True:
-        password = ''.join(secrets.choice(chars) for _ in range(length))
-
-        if (any(c.islower() for c in password) 
-                and any(c.isupper() for c in password)
-                and any(c.isdigit() for c in password)
-                and any(c in "!@#$%^&*" for c in password)):
+        password = "".join(secrets.choice(chars) for _ in range(password_length))
+        if (
+            any(char.islower() for char in password)
+            and any(char.isupper() for char in password)
+            and any(char.isdigit() for char in password)
+            and any(char in _PASSWORD_SPECIALS for char in password)
+        ):
             return password

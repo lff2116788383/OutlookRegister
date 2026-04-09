@@ -1,19 +1,23 @@
-import random
 from patchright.sync_api import sync_playwright
+from services import EzCaptcha, ProxyManager
 from .base_controller import BaseBrowserController
-
+from logger import logger
 
 class PatchrightController(BaseBrowserController):
-
     def launch_browser(self):
         try:
+            # Rotate proxy if configured
+            pm = ProxyManager(self.proxy, self.proxy_rotation_url)
+            effective_proxy = pm.rotate_if_needed()
+            
             p = sync_playwright().start() 
 
             proxy_settings = {
-                "server": self.proxy,
+                "server": effective_proxy,
                 "bypass": "localhost",
-            } if self.proxy else None
+            } if effective_proxy else None
 
+            logger.info(f"Launching patchright browser (Proxy: {effective_proxy or 'None'})")
             b = p.chromium.launch(
                 headless=False,            
                 args=['--lang=zh-CN'],
@@ -23,60 +27,57 @@ class PatchrightController(BaseBrowserController):
             return p, b
 
         except Exception as e:
-            print(f"启动浏览器失败: {e}")
+            logger.error(f"Failed to launch browser: {e}")
             return False, False
-        
+
     def handle_captcha(self, page):
+        try:
+            iframe = page.locator("iframe#enforcementFrame")
+            if iframe.count() == 0:
+                return True
 
-        frame1 = page.frame_locator('iframe[title="验证质询"]')
-        frame2 = frame1.frame_locator('iframe[style*="display: block"]')
-
-
-        for _ in range(0, self.max_captcha_retries + 1):
-
-            page.wait_for_timeout(200)
-            loc = frame2.locator('[aria-label="可访问性挑战"]')
-            box = loc.bounding_box()
-            x = box['x'] + box['width'] / 2 + random.randint(-10, 10)
-            y = box['y'] + box['height'] / 2 + random.randint(-10, 10)
-            page.mouse.click(x, y)
-
-            loc2 = frame2.locator('[aria-label="再次按下"]')
-            box2 = loc2.bounding_box()
-            x = box2['x'] + box2['width'] / 2 + random.randint(-20, 20)
-            y = box2['y'] + box2['height'] / 2 + random.randint(-13, 13)
-            page.mouse.click(x, y)
-
-            try:
-
-                page.locator('.draw').wait_for(state="detached")
-                try:
-
-                    # 简单的认为加载8秒后成功，暂不考虑请求.
-                    page.locator('[role="status"][aria-label="正在加载..."]').wait_for(timeout=5000)
-                    page.wait_for_timeout(8000)
-                    if page.get_by_text('一些异常活动').count() or page.get_by_text('此站点正在维护，暂时无法使用，请稍后重试。').count() > 0:
-                        print("[Error: Rate limit] - 正常通过验证码，但当前IP注册频率过快。")
-                        return False
-                    elif frame2.locator('[aria-label="可访问性挑战"]').count() > 0:
-                        continue
-                    break
-
-                except:
-
-                    if page.get_by_text('取消').count() > 0:
-                        break
-                    frame1.get_by_text("请再试一次").wait_for(timeout=15000)
-                    continue
-
-            except:
-                if page.get_by_text('取消').count() > 0:
-                     break
+            print("[Info] - 检测到 FunCaptcha 验证码，准备调用 EzCaptcha API")
+            if not self.config.api_keys.ezcaptcha:
+                print("[Error] - 未配置 ezcaptcha API Key，无法完成验证码识别")
                 return False
-        else: 
-            return False
 
-        return True
+            src = iframe.get_attribute("src")
+            website_key = "B7D8911C-5CC8-A9A3-35B0-554ACEE604DA"
+            if src and "pk=" in src:
+                website_key = src.split("pk=")[1].split("&")[0]
+
+            ezcaptcha = EzCaptcha(self.config.api_keys.ezcaptcha)
+            token = ezcaptcha.solve_funcaptcha("https://outlook.live.com", website_key)
+            if not token:
+                print("[Error] - 未能获取到 EzCaptcha Token")
+                return False
+
+            print("[Info] - 获取到验证码 Token，注入页面...")
+            page.evaluate(
+                '''(token) => {
+                    var input = document.createElement("input");
+                    input.type = "hidden";
+                    input.name = "FC-Token";
+                    input.id = "FC-Token";
+                    input.value = token;
+                    document.body.appendChild(input);
+
+                    window.parent.postMessage(JSON.stringify({
+                        eventId: "challenge-complete",
+                        payload: { sessionToken: token }
+                    }), "*");
+                }''',
+                token,
+            )
+            page.wait_for_timeout(5000)
+
+            if page.get_by_text("一些异常活动").count() or page.get_by_text("此站点正在维护").count() > 0:
+                print("[Error: Rate limit] - 正常通过验证码，但当前IP注册频率过快。")
+                return False
+            return True
+        except Exception as exc:
+            print(f"[Error: Captcha] - 处理验证码时发生错误: {exc}")
+            return False
 
     def get_thread_page(self):
         browser = self.get_thread_browser()
@@ -87,14 +88,13 @@ class PatchrightController(BaseBrowserController):
         if type == "done_browser" and page:
             context = page.context
             context.close()
-
         elif type == "all_browser":
-            for p, b in self.active_resources:
+            for playwright_instance, browser_instance in self.active_resources:
                 try:
-                    b.close()
-                except Exception: pass
+                    browser_instance.close()
+                except Exception:
+                    pass
                 try:
-                    p.stop()
-                except Exception: pass
-
-    
+                    playwright_instance.stop()
+                except Exception:
+                    pass
