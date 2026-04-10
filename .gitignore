@@ -2,20 +2,48 @@ __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
+*.so
+
+# Python 虚拟环境
+.venv/
+venv/
+env/
+ENV/
+
+# Python 工具缓存
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# 编辑器与系统文件
+.vscode/*.code-workspace
+.history/
+.DS_Store
+Thumbs.db
+
+# 日志与临时文件
 *.log
 *.tmp
 *.bak
 *.swp
-.venv/
-venv/
-env/
+*.pid
+
+# 本地配置与敏感配置
+config.local.json
+config.*.local.json
+
+# 运行结果与数据库产物
 Results/*.txt
 Results/*.log
 Results/app.log
 Results/*.db
 Results/*.db-shm
 Results/*.db-wal
+Results/*.sqlite
+Results/*.sqlite3
+
+# 浏览器与测试产物
 playwright-report/
-.pytest_cache/
-.mypy_cache/
-.vscode/*.code-workspace
+
