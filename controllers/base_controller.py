@@ -22,9 +22,11 @@ class BaseBrowserController(ABC):
         self.proxy = config.proxy.url
         self.proxy_rotation_url = config.proxy.rotation_url
         self.sms_api_key = config.api_keys.sms_activate
-        self.thread_local = threading.local()
         self.cleanup_lock = threading.Lock()
         self.active_resources = []
+        self.browser_pool_size = max(1, min(config.browser_pool.max_browsers, config.concurrent_flows))
+        self._browser_pool = []
+        self._browser_pool_index = 0
 
     @abstractmethod
     def launch_browser(self):
@@ -43,18 +45,19 @@ class BaseBrowserController(ABC):
         """返回当前线程使用的页面对象。"""
 
     def get_thread_browser(self):
-        if not hasattr(self.thread_local, "browser"):
-            playwright_instance, browser_instance = self.launch_browser()
-            if not playwright_instance:
-                return False
+        with self.cleanup_lock:
+            if len(self._browser_pool) < self.browser_pool_size:
+                playwright_instance, browser_instance = self.launch_browser()
+                if not playwright_instance:
+                    return False
+                resource = (playwright_instance, browser_instance)
+                self._browser_pool.append(resource)
+                self.active_resources.append(resource)
+                return browser_instance
 
-            self.thread_local.playwright = playwright_instance
-            self.thread_local.browser = browser_instance
-
-            with self.cleanup_lock:
-                self.active_resources.append((playwright_instance, browser_instance))
-
-        return self.thread_local.browser
+            resource = self._browser_pool[self._browser_pool_index % len(self._browser_pool)]
+            self._browser_pool_index += 1
+            return resource[1]
 
     def _fail(self, error_code: ErrorCode, message: str, stage: Stage, *, risk_detected: bool = False) -> FlowResult:
         logger.error("[%s] %s", error_code.value, message)

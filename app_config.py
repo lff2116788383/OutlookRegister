@@ -48,6 +48,11 @@ class RiskControlConfig:
 
 
 @dataclass(slots=True)
+class BrowserPoolConfig:
+    max_browsers: int
+
+
+@dataclass(slots=True)
 class AppConfig:
     choose_browser: str
     email_domain: str
@@ -60,6 +65,7 @@ class AppConfig:
     api_keys: ApiKeysConfig
     playwright: PlaywrightConfig
     risk_control: RiskControlConfig
+    browser_pool: BrowserPoolConfig
     raw: Dict[str, Any]
 
     @classmethod
@@ -71,6 +77,7 @@ class AppConfig:
         api_keys = data.get("api_keys", {})
         playwright = data.get("playwright", {})
         risk_control = data.get("risk_control", {})
+        browser_pool = data.get("browser_pool", {})
         proxy_value = data.get("proxy", "")
         proxy_rotation_url = data.get("proxy_rotation_url", "")
 
@@ -114,6 +121,9 @@ class AppConfig:
                 max_task_duration_seconds=int(risk_control.get("max_task_duration_seconds", 180)),
                 max_sms_wait_cycles=int(risk_control.get("max_sms_wait_cycles", 20)),
             ),
+            browser_pool=BrowserPoolConfig(
+                max_browsers=max(1, int(browser_pool.get("max_browsers", min(int(data.get("concurrent_flows", 1)), 3))))
+            ),
             raw=data,
         )
 
@@ -145,6 +155,9 @@ class AppConfig:
                 "max_failure_streak": self.risk_control.max_failure_streak,
                 "max_task_duration_seconds": self.risk_control.max_task_duration_seconds,
                 "max_sms_wait_cycles": self.risk_control.max_sms_wait_cycles,
+            },
+            "browser_pool": {
+                "max_browsers": self.browser_pool.max_browsers,
             },
             "info": self.raw.get(
                 "info",

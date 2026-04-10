@@ -11,6 +11,9 @@
     "max_captcha_retries": 0,
     "concurrent_flows": 1,
     "max_tasks": 1,
+    "browser_pool": {
+        "max_browsers": 1
+    },
     "oauth2": {
         "enable_oauth2": false,
         "client_id": "",
