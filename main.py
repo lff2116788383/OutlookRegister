@@ -45,6 +45,7 @@ def initialize_tasks(db: TaskDB, config: AppConfig) -> None:
 
 def run_cli() -> None:
     config = AppConfig.load()
+    config.validate()
     ensure_runtime_dirs()
     db = TaskDB()
 

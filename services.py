@@ -1,5 +1,8 @@
 from __future__ import annotations
 import time
+from typing import Any, Dict
+from urllib.parse import urlsplit
+
 import requests
 from logger import logger
 
@@ -97,23 +100,85 @@ class SmsActivate:
             pass
 
 class ProxyManager:
-    def __init__(self, static_proxy=None, rotation_url=None):
+    def __init__(self, static_proxy=None, dynamic_proxy_config=None):
         self.static_proxy = static_proxy
-        self.rotation_url = rotation_url
-        self.current_proxy = static_proxy
+        self.dynamic_proxy_config = dynamic_proxy_config
+
+    def _build_ipfoxy_proxy(self):
+        if not self.dynamic_proxy_config or not self.dynamic_proxy_config.enabled:
+            return self.static_proxy
+
+        endpoint = self.dynamic_proxy_config.endpoint.strip()
+        username = self.dynamic_proxy_config.username.strip()
+        password = self.dynamic_proxy_config.password.strip()
+        provider = self.dynamic_proxy_config.provider.strip() or "IPFoxy"
+
+        if not endpoint or not username or not password:
+            logger.warning("动态住宅代理已启用，但 %s 配置不完整，回退静态代理", provider)
+            return self.static_proxy
+
+        session = self.dynamic_proxy_config.session.strip()
+        country = self.dynamic_proxy_config.country.strip().upper()
+        sticky_minutes = max(1, int(getattr(self.dynamic_proxy_config, "sticky_minutes", 30) or 30))
+        proxy_username = username
+        tags = []
+        if country:
+            tags.append(f"cc-{country}")
+        if session:
+            tags.append(f"sessid-{session}")
+        if sticky_minutes:
+            tags.append(f"ttl-{sticky_minutes}")
+        if tags:
+            proxy_username = f"{username}-{'-'.join(tags)}"
+
+        proxy_url = f"http://{proxy_username}:{password}@{endpoint}"
+        logger.info("已启用 %s 动态住宅代理入口: %s", provider, endpoint)
+        return proxy_url
 
     def rotate_if_needed(self):
-        if not self.rotation_url:
-            return self.static_proxy
-            
+        return self._build_ipfoxy_proxy()
+
+    def check_health(self, timeout: int = 15) -> Dict[str, Any]:
+        proxy_url = self._build_ipfoxy_proxy() or self.static_proxy
+        result: Dict[str, Any] = {
+            "ok": False,
+            "proxy_url": proxy_url or "",
+            "auth_ok": False,
+            "connect_ok": False,
+            "ip": "",
+            "country": "",
+            "country_match": None,
+            "sticky_session": None,
+            "message": "未配置代理",
+        }
+        if not proxy_url:
+            return result
+
+        proxies = {"http": proxy_url, "https": proxy_url}
+        split = urlsplit(proxy_url)
+        result["auth_ok"] = bool(split.username)
+
         try:
-            logger.info("Requesting proxy rotation...")
-            res = requests.get(self.rotation_url, timeout=30)
-            if res.status_code == 200:
-                # Assuming rotation URL returns the new proxy string or just triggers rotation
-                # If it returns new proxy: self.current_proxy = res.text.strip()
-                logger.info("Proxy rotated successfully")
-                return self.current_proxy
-        except Exception as e:
-            logger.error(f"Proxy rotation failed: {e}")
-        return self.current_proxy
+            response = requests.get("https://ipinfo.io/json", proxies=proxies, timeout=timeout)
+            response.raise_for_status()
+            payload = response.json()
+            result["connect_ok"] = True
+            result["ok"] = True
+            result["ip"] = str(payload.get("ip", "") or "")
+            result["country"] = str(payload.get("country", "") or "")
+            expected_country = ""
+            sticky_session = ""
+            if self.dynamic_proxy_config and self.dynamic_proxy_config.enabled:
+                expected_country = str(self.dynamic_proxy_config.country or "").strip().upper()
+                sticky_session = str(self.dynamic_proxy_config.session or "").strip()
+            result["country_match"] = None if not expected_country else result["country"].upper() == expected_country
+            result["sticky_session"] = None if not sticky_session else "sessid-" in (split.username or "")
+            result["message"] = "代理连通正常"
+            return result
+        except requests.HTTPError as exc:
+            status_code = exc.response.status_code if exc.response is not None else "unknown"
+            result["message"] = f"代理请求失败，HTTP {status_code}"
+            return result
+        except requests.RequestException as exc:
+            result["message"] = f"代理连通失败：{exc}"
+            return result

@@ -14,7 +14,7 @@ class PlaywrightController(BaseBrowserController):
 
     def launch_browser(self):
         try:
-            proxy_manager = ProxyManager(self.proxy, self.proxy_rotation_url)
+            proxy_manager = ProxyManager(self.proxy, self.dynamic_proxy_config)
             effective_proxy = proxy_manager.rotate_if_needed()
 
             playwright_instance = sync_playwright().start()
@@ -30,7 +30,7 @@ class PlaywrightController(BaseBrowserController):
             logger.info("Launching playwright browser (Proxy: %s)", effective_proxy or "None")
             browser_instance = playwright_instance.chromium.launch(
                 executable_path=self.browser_path or None,
-                headless=False,
+                headless=self.config.playwright.headless,
                 args=["--lang=zh-CN"],
                 proxy=proxy_settings,
             )
@@ -44,7 +44,18 @@ class PlaywrightController(BaseBrowserController):
         if not browser:
             return None
         context = browser.new_context()
-        return context.new_page()
+        page = context.new_page()
+        traffic_stats = self._init_traffic_stats()
+        setattr(page, "_traffic_stats", traffic_stats)
+
+        page.on("request", lambda request: self._on_request_traffic(request, traffic_stats))
+        page.on("response", lambda response: self._on_response_traffic(response, traffic_stats))
+
+        if self.enable_route_intercept:
+            page.route("**/*", lambda route, request: self._handle_route(route, request, traffic_stats))
+            logger.info("Route intercept enabled for playwright page")
+
+        return page
 
     def handle_captcha(self, page):
         try:
@@ -114,6 +125,23 @@ class PlaywrightController(BaseBrowserController):
         except Exception as exc:
             logger.error("Playwright captcha handling error: %s", exc)
             return False
+
+    def _on_request_traffic(self, request, traffic_stats):
+        traffic_stats["request_count"] += 1
+        traffic_stats["request_bytes"] += self._estimate_request_bytes(request)
+
+    def _on_response_traffic(self, response, traffic_stats):
+        traffic_stats["response_count"] += 1
+        traffic_stats["response_bytes"] += self._estimate_response_bytes(response)
+
+    def _handle_route(self, route, request, traffic_stats):
+        resource_type = request.resource_type
+        if resource_type in {"image", "media", "font"}:
+            traffic_stats["blocked_count"] += 1
+            traffic_stats["blocked_types"][resource_type] += 1
+            route.abort()
+            return
+        route.continue_()
 
     def clean_up(self, page=None, type="all_browser"):
         if type == "done_browser" and page:

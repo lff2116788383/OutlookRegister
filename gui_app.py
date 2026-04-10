@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app_config import APP_LOG_PATH, AppConfig, CONFIG_PATH, ensure_runtime_dirs
+from app_config import APP_LOG_PATH, AppConfig, CONFIG_PATH, ConfigValidationError, ensure_runtime_dirs
 from controller_factory import build_controller
 from database import TaskDB
 from execution_models import ErrorCode, FlowResult, RiskCircuitBreaker, Stage
@@ -40,6 +40,7 @@ from gui_state import DEFAULT_LOG_PATH, RESULT_FILES
 from logger import logger
 from result_store import ResultStore
 from runtime import RuntimeContext
+from services import ProxyManager
 from utils import generate_strong_password, random_email
 
 
@@ -282,12 +283,25 @@ class MainWindow(QMainWindow):
         config_form.setLabelAlignment(Qt.AlignLeft)
         config_form.setFormAlignment(Qt.AlignTop)
 
+        browser_group = QGroupBox("浏览器配置")
+        browser_form = QFormLayout(browser_group)
+        browser_form.setSpacing(10)
+        browser_form.setLabelAlignment(Qt.AlignLeft)
+        browser_form.setFormAlignment(Qt.AlignTop)
+
+        proxy_group = QGroupBox("代理与网络")
+        proxy_form = QFormLayout(proxy_group)
+        proxy_form.setSpacing(10)
+        proxy_form.setLabelAlignment(Qt.AlignLeft)
+        proxy_form.setFormAlignment(Qt.AlignTop)
+
         self.browser_combo = QComboBox()
         self.browser_combo.addItems(["patchright", "playwright"])
         self.email_domain_combo = QComboBox()
         self.email_domain_combo.addItems(["hotmail.com", "outlook.com"])
         self.proxy_input = QLineEdit()
-        self.proxy_rotation_input = QLineEdit()
+        self.route_intercept_enabled = QCheckBox("启用路由拦截(节省代理流量)")
+        self.headless_enabled = QCheckBox("启用无头浏览器")
         self.bot_wait_input = QSpinBox()
         self.bot_wait_input.setRange(0, 999)
         self.captcha_retry_input = QSpinBox()
@@ -310,16 +324,18 @@ class MainWindow(QMainWindow):
         self.max_sms_wait_cycles_input = QSpinBox()
         self.max_sms_wait_cycles_input.setRange(1, 120)
 
-        config_form.addRow("浏览器类型", self.browser_combo)
+        browser_form.addRow("浏览器类型", self.browser_combo)
+        browser_form.addRow(self.headless_enabled)
+        browser_form.addRow("Playwright 浏览器路径", self.playwright_path_input)
+        browser_form.addRow("浏览器池大小", self.max_browsers_input)
+
+        proxy_form.addRow("静态代理地址", self.proxy_input)
+
         config_form.addRow("邮箱后缀", self.email_domain_combo)
-        config_form.addRow("代理地址", self.proxy_input)
-        config_form.addRow("代理轮换 URL", self.proxy_rotation_input)
         config_form.addRow("机器人等待时间(秒)", self.bot_wait_input)
         config_form.addRow("验证码重试次数", self.captcha_retry_input)
         config_form.addRow("并发数", self.concurrent_input)
         config_form.addRow("最大任务数", self.max_tasks_input)
-        config_form.addRow("浏览器池大小", self.max_browsers_input)
-        config_form.addRow("Playwright 浏览器路径", self.playwright_path_input)
         config_form.addRow("EzCaptcha Key", self.ezcaptcha_input)
         config_form.addRow("SmsActivate Key", self.sms_activate_input)
         config_form.addRow("连续风险熔断阈值", self.max_risk_input)
@@ -337,11 +353,47 @@ class MainWindow(QMainWindow):
         self.redirect_url_input = QLineEdit()
         self.scopes_input = QTextEdit()
         self.scopes_input.setPlaceholderText("每行一个 Scope")
-        self.scopes_input.setFixedHeight(220)
+        self.scopes_input.setFixedHeight(180)
         oauth_form.addRow(self.oauth_enabled)
         oauth_form.addRow("Client ID", self.client_id_input)
         oauth_form.addRow("Redirect URL", self.redirect_url_input)
         oauth_form.addRow("Scopes", self.scopes_input)
+
+        dynamic_proxy_group = QGroupBox("动态住宅代理与流量优化")
+        dynamic_proxy_form = QFormLayout(dynamic_proxy_group)
+        dynamic_proxy_form.setSpacing(10)
+        dynamic_proxy_form.setLabelAlignment(Qt.AlignLeft)
+        dynamic_proxy_form.setFormAlignment(Qt.AlignTop)
+        self.dynamic_proxy_enabled = QCheckBox("启用动态住宅代理")
+        self.dynamic_proxy_provider_input = QLineEdit()
+        self.dynamic_proxy_provider_input.setPlaceholderText("例如：IPFoxy")
+        self.dynamic_proxy_endpoint_input = QLineEdit()
+        self.dynamic_proxy_endpoint_input.setPlaceholderText("例如：gate.ipfoxy.com:12345")
+        self.dynamic_proxy_username_input = QLineEdit()
+        self.dynamic_proxy_username_input.setPlaceholderText("IPFoxy 用户名")
+        self.dynamic_proxy_password_input = QLineEdit()
+        self.dynamic_proxy_password_input.setEchoMode(QLineEdit.Password)
+        self.dynamic_proxy_password_input.setPlaceholderText("IPFoxy 密码")
+        self.dynamic_proxy_country_input = QLineEdit()
+        self.dynamic_proxy_country_input.setPlaceholderText("可选，例如：us")
+        self.dynamic_proxy_session_input = QLineEdit()
+        self.dynamic_proxy_session_input.setPlaceholderText("可选，会话标识")
+        self.dynamic_proxy_sticky_minutes_input = QSpinBox()
+        self.dynamic_proxy_sticky_minutes_input.setRange(1, 10080)
+        self.dynamic_proxy_sticky_minutes_input.setValue(30)
+        dynamic_proxy_form.addRow(self.dynamic_proxy_enabled)
+        dynamic_proxy_form.addRow("代理服务商", self.dynamic_proxy_provider_input)
+        dynamic_proxy_form.addRow("代理入口", self.dynamic_proxy_endpoint_input)
+        dynamic_proxy_form.addRow("代理用户名", self.dynamic_proxy_username_input)
+        dynamic_proxy_form.addRow("代理密码", self.dynamic_proxy_password_input)
+        dynamic_proxy_form.addRow("国家代码", self.dynamic_proxy_country_input)
+        dynamic_proxy_form.addRow("会话标识", self.dynamic_proxy_session_input)
+        dynamic_proxy_form.addRow("粘性时长(分钟)", self.dynamic_proxy_sticky_minutes_input)
+        dynamic_proxy_form.addRow(self.route_intercept_enabled)
+        dynamic_proxy_hint = QLabel("动态住宅代理与路由拦截都属于代理流量策略，建议在这里统一配置。路由拦截当前仅阻止 image / media / font。")
+        dynamic_proxy_hint.setWordWrap(True)
+        dynamic_proxy_hint.setProperty("role", "sectionHint")
+        dynamic_proxy_form.addRow(dynamic_proxy_hint)
 
         config_hint_group = QGroupBox("使用说明")
         config_hint_layout = QVBoxLayout(config_hint_group)
@@ -352,11 +404,14 @@ class MainWindow(QMainWindow):
         config_hint.setProperty("role", "sectionHint")
         config_hint_layout.addWidget(config_hint)
 
+        left_layout.addWidget(browser_group)
+        left_layout.addWidget(proxy_group)
         left_layout.addWidget(config_group)
         left_layout.addWidget(config_hint_group)
         left_layout.addStretch(1)
 
         right_layout.addWidget(oauth_group)
+        right_layout.addWidget(dynamic_proxy_group)
         right_layout.addStretch(1)
 
         content_splitter.addWidget(left_panel)
@@ -416,17 +471,10 @@ class MainWindow(QMainWindow):
         overview_layout.addWidget(self.metric_success_card, 0, 2)
         overview_layout.addWidget(self.metric_risk_card, 0, 3)
 
-        console_splitter = QSplitter(Qt.Horizontal)
-
-        left_panel = QWidget()
-        left_layout = QVBoxLayout(left_panel)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(12)
-
-        right_panel = QWidget()
-        right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(12)
+        console_panel = QWidget()
+        console_layout = QVBoxLayout(console_panel)
+        console_layout.setContentsMargins(0, 0, 0, 0)
+        console_layout.setSpacing(12)
 
         control_group = QGroupBox("任务控制")
         control_layout = QVBoxLayout(control_group)
@@ -458,11 +506,13 @@ class MainWindow(QMainWindow):
         self.clear_log_button = QPushButton("清空日志窗口")
         self.clear_log_file_button = QPushButton("清空日志文件")
         self.refresh_results_button = QPushButton("刷新结果")
+        self.test_proxy_button = QPushButton("测试代理")
         self.clear_all_results_button = QPushButton("清空全部结果")
         secondary_action_layout.addWidget(self.refresh_log_button)
         secondary_action_layout.addWidget(self.clear_log_button)
         secondary_action_layout.addWidget(self.clear_log_file_button)
         secondary_action_layout.addWidget(self.refresh_results_button)
+        secondary_action_layout.addWidget(self.test_proxy_button)
         secondary_action_layout.addWidget(self.clear_all_results_button)
 
         control_layout.addWidget(control_hint)
@@ -519,11 +569,37 @@ class MainWindow(QMainWindow):
         monitor_layout.addWidget(monitor_hint)
         monitor_layout.addLayout(task_toolbar)
         monitor_layout.addWidget(self.task_table)
-        monitor_layout.addWidget(detail_group)
 
-        left_layout.addWidget(control_group)
-        left_layout.addWidget(log_group)
-        left_layout.addWidget(monitor_group)
+        analytics_group = QGroupBox("阶段级统计")
+        analytics_layout = QGridLayout(analytics_group)
+        analytics_layout.setHorizontalSpacing(10)
+        analytics_layout.setVerticalSpacing(10)
+        self.metric_register_rate_card = QLabel("注册成功率\n0%")
+        self.metric_register_rate_card.setProperty("role", "metricCard")
+        self.metric_oauth_rate_card = QLabel("OAuth 成功率\n0%")
+        self.metric_oauth_rate_card.setProperty("role", "metricCardAlt")
+        self.metric_avg_duration_card = QLabel("平均耗时\n0 ms")
+        self.metric_avg_duration_card.setProperty("role", "metricCard")
+        self.metric_risk_count_card = QLabel("风控次数\n0")
+        self.metric_risk_count_card.setProperty("role", "metricCardAlt")
+        self.metric_total_traffic_card = QLabel("总流量\n0 B / 0 B")
+        self.metric_total_traffic_card.setProperty("role", "metricCard")
+        self.metric_avg_traffic_card = QLabel("平均流量\n0 B / 0 B")
+        self.metric_avg_traffic_card.setProperty("role", "metricCardAlt")
+        self.metric_blocked_card = QLabel("资源拦截\n0 / 0.0")
+        self.metric_blocked_card.setProperty("role", "metricCard")
+        analytics_layout.addWidget(self.metric_register_rate_card, 0, 0)
+        analytics_layout.addWidget(self.metric_oauth_rate_card, 0, 1)
+        analytics_layout.addWidget(self.metric_avg_duration_card, 0, 2)
+        analytics_layout.addWidget(self.metric_risk_count_card, 0, 3)
+        analytics_layout.addWidget(self.metric_total_traffic_card, 1, 0)
+        analytics_layout.addWidget(self.metric_avg_traffic_card, 1, 1)
+        analytics_layout.addWidget(self.metric_blocked_card, 1, 2)
+        self.error_distribution_view = QPlainTextEdit()
+        self.error_distribution_view.setReadOnly(True)
+        self.error_distribution_view.setPlaceholderText("最近 100 个任务错误分布将在此显示…")
+        self.error_distribution_view.setMinimumHeight(120)
+        analytics_layout.addWidget(self.error_distribution_view, 2, 0, 1, 4)
 
         results_group = QGroupBox("结果中心")
         results_layout = QVBoxLayout(results_group)
@@ -536,15 +612,10 @@ class MainWindow(QMainWindow):
         result_header_layout.addStretch(1)
         results_layout.addLayout(result_header_layout)
 
-        result_columns = QHBoxLayout()
+        result_columns = QVBoxLayout()
         result_columns.setSpacing(10)
 
-        left_result_column = QVBoxLayout()
-        left_result_column.setSpacing(10)
-        right_result_column = QVBoxLayout()
-        right_result_column.setSpacing(10)
-
-        for index, entry in enumerate(RESULT_FILES):
+        for entry in RESULT_FILES:
             group = QGroupBox(entry.label)
             group_layout = QVBoxLayout(group)
             group_layout.setSpacing(8)
@@ -565,11 +636,6 @@ class MainWindow(QMainWindow):
             group_layout.addWidget(viewer)
             self.result_views[entry.path] = viewer
 
-            if index % 2 == 0:
-                left_result_column.addWidget(group)
-            else:
-                right_result_column.addWidget(group)
-
             refresh_button.clicked.connect(
                 lambda _checked=False, path=entry.path: self._refresh_single_result_file(path)
             )
@@ -577,27 +643,32 @@ class MainWindow(QMainWindow):
                 lambda _checked=False, path=entry.path: self._clear_single_result_file(path)
             )
 
-        left_result_column.addStretch(1)
-        right_result_column.addStretch(1)
+            result_columns.addWidget(group)
 
-        left_result_widget = QWidget()
-        left_result_widget.setLayout(left_result_column)
-        right_result_widget = QWidget()
-        right_result_widget.setLayout(right_result_column)
-        result_columns.addWidget(left_result_widget, 1)
-        result_columns.addWidget(right_result_widget, 1)
+        result_columns.addStretch(1)
         results_layout.addLayout(result_columns)
 
-        right_layout.addWidget(results_group)
-        right_layout.addStretch(1)
+        top_row_splitter = QSplitter(Qt.Horizontal)
+        top_row_splitter.addWidget(control_group)
+        top_row_splitter.addWidget(monitor_group)
+        top_row_splitter.setChildrenCollapsible(False)
+        top_row_splitter.setSizes([720, 720])
 
-        console_splitter.addWidget(left_panel)
-        console_splitter.addWidget(right_panel)
-        console_splitter.setSizes([760, 660])
+        middle_row_splitter = QSplitter(Qt.Horizontal)
+        middle_row_splitter.addWidget(log_group)
+        middle_row_splitter.addWidget(detail_group)
+        middle_row_splitter.setChildrenCollapsible(False)
+        middle_row_splitter.setSizes([720, 720])
+
+        console_layout.addWidget(top_row_splitter)
+        console_layout.addWidget(middle_row_splitter)
+        console_layout.addWidget(analytics_group)
+        console_layout.addWidget(results_group)
+        console_layout.addStretch(1)
 
         root_layout.addWidget(hero_group)
         root_layout.addWidget(overview_group)
-        root_layout.addWidget(console_splitter)
+        root_layout.addWidget(console_panel)
 
         scroll_area.setWidget(content)
         outer_layout.addWidget(scroll_area)
@@ -608,6 +679,7 @@ class MainWindow(QMainWindow):
         self.clear_log_file_button.clicked.connect(self._clear_log_file)
         self.refresh_log_button.clicked.connect(self._load_log_file)
         self.refresh_results_button.clicked.connect(self._refresh_result_files)
+        self.test_proxy_button.clicked.connect(self._test_proxy_health)
         self.clear_all_results_button.clicked.connect(self._clear_all_result_files)
         self.task_filter_combo.currentTextChanged.connect(self._refresh_task_table)
         self.refresh_tasks_button.clicked.connect(self._refresh_task_table)
@@ -641,7 +713,8 @@ class MainWindow(QMainWindow):
         self.browser_combo.setCurrentText(config.choose_browser)
         self.email_domain_combo.setCurrentText(config.email_domain)
         self.proxy_input.setText(config.proxy.url)
-        self.proxy_rotation_input.setText(config.proxy.rotation_url)
+        self.route_intercept_enabled.setChecked(config.proxy.enable_route_intercept)
+        self.headless_enabled.setChecked(config.playwright.headless)
         self.bot_wait_input.setValue(config.bot_protection_wait)
         self.captcha_retry_input.setValue(config.max_captcha_retries)
         self.concurrent_input.setValue(config.concurrent_flows)
@@ -658,6 +731,14 @@ class MainWindow(QMainWindow):
         self.client_id_input.setText(config.oauth2.client_id)
         self.redirect_url_input.setText(config.oauth2.redirect_url)
         self.scopes_input.setPlainText("\n".join(config.oauth2.scopes))
+        self.dynamic_proxy_enabled.setChecked(config.oauth2.dynamic_residential_proxy.enabled)
+        self.dynamic_proxy_provider_input.setText(config.oauth2.dynamic_residential_proxy.provider)
+        self.dynamic_proxy_endpoint_input.setText(config.oauth2.dynamic_residential_proxy.endpoint)
+        self.dynamic_proxy_username_input.setText(config.oauth2.dynamic_residential_proxy.username)
+        self.dynamic_proxy_password_input.setText(config.oauth2.dynamic_residential_proxy.password)
+        self.dynamic_proxy_country_input.setText(config.oauth2.dynamic_residential_proxy.country)
+        self.dynamic_proxy_session_input.setText(config.oauth2.dynamic_residential_proxy.session)
+        self.dynamic_proxy_sticky_minutes_input.setValue(config.oauth2.dynamic_residential_proxy.sticky_minutes)
         self.status_label.setText(f"已加载配置: {config_path or CONFIG_PATH}")
 
     def _build_config_from_form(self) -> AppConfig:
@@ -670,13 +751,15 @@ class MainWindow(QMainWindow):
         config.choose_browser = self.browser_combo.currentText()
         config.email_domain = self.email_domain_combo.currentText().strip().lower()
         config.proxy.url = self.proxy_input.text().strip()
-        config.proxy.rotation_url = self.proxy_rotation_input.text().strip()
+        config.proxy.rotation_url = ""
+        config.proxy.enable_route_intercept = self.route_intercept_enabled.isChecked()
         config.bot_protection_wait = self.bot_wait_input.value()
         config.max_captcha_retries = self.captcha_retry_input.value()
         config.concurrent_flows = self.concurrent_input.value()
         config.max_tasks = self.max_tasks_input.value()
         config.browser_pool.max_browsers = self.max_browsers_input.value()
         config.playwright.browser_path = self.playwright_path_input.text().strip()
+        config.playwright.headless = self.headless_enabled.isChecked()
         config.api_keys.ezcaptcha = self.ezcaptcha_input.text().strip()
         config.api_keys.sms_activate = self.sms_activate_input.text().strip()
         config.risk_control.max_consecutive_risk = self.max_risk_input.value()
@@ -687,10 +770,24 @@ class MainWindow(QMainWindow):
         config.oauth2.client_id = self.client_id_input.text().strip()
         config.oauth2.redirect_url = self.redirect_url_input.text().strip()
         config.oauth2.scopes = scopes
+        config.oauth2.dynamic_residential_proxy.enabled = self.dynamic_proxy_enabled.isChecked()
+        config.oauth2.dynamic_residential_proxy.provider = self.dynamic_proxy_provider_input.text().strip() or "IPFoxy"
+        config.oauth2.dynamic_residential_proxy.endpoint = self.dynamic_proxy_endpoint_input.text().strip()
+        config.oauth2.dynamic_residential_proxy.username = self.dynamic_proxy_username_input.text().strip()
+        config.oauth2.dynamic_residential_proxy.password = self.dynamic_proxy_password_input.text().strip()
+        config.oauth2.dynamic_residential_proxy.country = self.dynamic_proxy_country_input.text().strip()
+        config.oauth2.dynamic_residential_proxy.session = self.dynamic_proxy_session_input.text().strip()
+        config.oauth2.dynamic_residential_proxy.sticky_minutes = self.dynamic_proxy_sticky_minutes_input.value()
         return config
 
     def _save_form_to_config(self) -> None:
         config = self._build_config_from_form()
+        try:
+            config.validate()
+        except ConfigValidationError as exc:
+            QMessageBox.warning(self, "配置校验失败", "\n".join(exc.errors))
+            self.status_label.setText("配置校验失败")
+            return
         config.save()
         self.status_label.setText("配置已保存")
 
@@ -822,11 +919,41 @@ class MainWindow(QMainWindow):
         else:
             self.failure_stats_label.setText("最近失败：无")
 
+    def _format_human_bytes(self, size: int) -> str:
+        units = ["B", "KB", "MB", "GB"]
+        value = float(max(0, size))
+        for unit in units:
+            if value < 1024 or unit == units[-1]:
+                return f"{value:.2f} {unit}"
+            value /= 1024
+        return f"{value:.2f} GB"
+
+    def _refresh_dashboard_stats(self) -> None:
+        stats = ResultStore().get_dashboard_stats(recent_limit=100)
+        self.metric_register_rate_card.setText(f"注册成功率\n{stats['register_success_rate']}%")
+        self.metric_oauth_rate_card.setText(f"OAuth 成功率\n{stats['oauth_success_rate']}%")
+        self.metric_avg_duration_card.setText(f"平均耗时\n{stats['avg_duration_ms']} ms")
+        self.metric_risk_count_card.setText(f"风控次数\n{stats['risk_count']}")
+        self.metric_total_traffic_card.setText(
+            f"总流量\n↑ {self._format_human_bytes(stats['total_upload_bytes'])} / ↓ {self._format_human_bytes(stats['total_download_bytes'])}"
+        )
+        self.metric_avg_traffic_card.setText(
+            f"平均流量\n↑ {self._format_human_bytes(stats['avg_upload_bytes'])} / ↓ {self._format_human_bytes(stats['avg_download_bytes'])}"
+        )
+        self.metric_blocked_card.setText(f"资源拦截\n{stats['total_blocked']} / {stats['avg_blocked']}")
+        distribution = stats["error_distribution"]
+        if distribution:
+            lines = [f"{code}: {count}" for code, count in distribution.items()]
+            self.error_distribution_view.setPlainText("\n".join(lines))
+        else:
+            self.error_distribution_view.setPlainText("最近 100 个任务暂无错误记录")
+
     def _refresh_result_files(self) -> None:
         for path in self.result_views:
             self._refresh_single_result_file(path)
         self._refresh_risk_status()
         self._refresh_task_table()
+        self._refresh_dashboard_stats()
 
     def _refresh_single_result_file(self, path: Path) -> None:
         viewer = self.result_views[path]
@@ -867,6 +994,32 @@ class MainWindow(QMainWindow):
             path.write_text("", encoding="utf-8")
         self._refresh_result_files()
         self.status_label.setText("已清空全部结果文件")
+
+    def _test_proxy_health(self) -> None:
+        config = self._build_config_from_form()
+        try:
+            config.validate()
+        except ConfigValidationError as exc:
+            QMessageBox.warning(self, "配置校验失败", "\n".join(exc.errors))
+            return
+
+        proxy_manager = ProxyManager(
+            static_proxy=config.proxy.url,
+            dynamic_proxy_config=config.oauth2.dynamic_residential_proxy,
+        )
+        result = proxy_manager.check_health()
+
+        lines = [
+            f"连通状态: {'正常' if result['connect_ok'] else '失败'}",
+            f"认证状态: {'已识别' if result['auth_ok'] else '未识别'}",
+            f"出口 IP: {result['ip'] or '-'}",
+            f"出口国家: {result['country'] or '-'}",
+            f"国家匹配: {result['country_match'] if result['country_match'] is not None else '未配置'}",
+            f"粘性会话: {result['sticky_session'] if result['sticky_session'] is not None else '未配置'}",
+            f"消息: {result['message']}",
+        ]
+        QMessageBox.information(self, "代理健康检查", "\n".join(lines))
+        self.status_label.setText(f"代理检测完成: {result['message']}")
 
     def _prepare_tasks(self) -> None:
         self._save_form_to_config()
@@ -1059,6 +1212,10 @@ class MainWindow(QMainWindow):
 
 def run_gui() -> None:
     app = QApplication([])
+    try:
+        AppConfig.load().validate()
+    except ConfigValidationError as exc:
+        QMessageBox.warning(None, "配置校验失败", "\n".join(exc.errors))
     window = MainWindow()
     window.show()
     app.exec()

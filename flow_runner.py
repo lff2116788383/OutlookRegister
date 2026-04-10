@@ -39,8 +39,9 @@ class FlowRunner:
             }
         )
 
-    def _save_final_result(self, task_id: int, email: str, result: FlowResult, started_at: float) -> None:
+    def _save_final_result(self, task_id: int, email: str, result: FlowResult, started_at: float, traffic_stats: dict | None = None) -> None:
         email_address = build_email_address(email, self.context.config.email_domain)
+        traffic_stats = traffic_stats or {}
         self.context.result_store.save_task_result(
             {
                 "task_id": task_id,
@@ -51,6 +52,11 @@ class FlowRunner:
                 "error_message": result.error_message,
                 "risk_detected": result.risk_detected,
                 "duration_ms": int((time.time() - started_at) * 1000),
+                "request_count": int(traffic_stats.get("request_count", 0) or 0),
+                "response_count": int(traffic_stats.get("response_count", 0) or 0),
+                "blocked_count": int(traffic_stats.get("blocked_count", 0) or 0),
+                "request_bytes": int(traffic_stats.get("request_bytes", 0) or 0),
+                "response_bytes": int(traffic_stats.get("response_bytes", 0) or 0),
             }
         )
 
@@ -63,11 +69,13 @@ class FlowRunner:
 
     def process_single_flow_with_credentials(self, task_id: int, email: str, password: str) -> FlowResult:
         page = None
+        traffic_stats = None
         started_at = time.time()
         max_duration_seconds = self.context.config.risk_control.max_task_duration_seconds
         self._log_event(task_id=task_id, email=email, stage=Stage.INIT.value, status="started", message="任务开始")
         try:
             page = self.controller.get_thread_page()
+            traffic_stats = getattr(page, "_traffic_stats", None) if page is not None else None
             if page is None:
                 result = FlowResult.fail(
                     ErrorCode.BROWSER_LAUNCH_FAILED,
@@ -82,7 +90,7 @@ class FlowRunner:
                     message=result.error_message,
                     error_code=result.error_code,
                 )
-                self._save_final_result(task_id, email, result, started_at)
+                self._save_final_result(task_id, email, result, started_at, traffic_stats)
                 return result
 
             result = self.controller.outlook_register(page, email, password)
@@ -95,7 +103,7 @@ class FlowRunner:
                     message=result.error_message,
                     error_code=result.error_code,
                 )
-                self._save_final_result(task_id, email, result, started_at)
+                self._save_final_result(task_id, email, result, started_at, traffic_stats)
                 return result
 
             if time.time() - started_at > max_duration_seconds:
@@ -112,7 +120,7 @@ class FlowRunner:
                     message=result.error_message,
                     error_code=result.error_code,
                 )
-                self._save_final_result(task_id, email, result, started_at)
+                self._save_final_result(task_id, email, result, started_at, traffic_stats)
                 return result
 
             self.context.result_store.save_registered_email(
@@ -135,7 +143,7 @@ class FlowRunner:
 
             if not self.controller.enable_oauth2:
                 final_result = FlowResult.ok(stage=Stage.POST_REGISTER.value)
-                self._save_final_result(task_id, email, final_result, started_at)
+                self._save_final_result(task_id, email, final_result, started_at, traffic_stats)
                 return final_result
 
             token_result = get_access_token(page, email, self.context.config)
@@ -153,13 +161,14 @@ class FlowRunner:
                     message=result.error_message,
                     error_code=result.error_code,
                 )
-                self._save_final_result(task_id, email, result, started_at)
+                self._save_final_result(task_id, email, result, started_at, traffic_stats)
                 return result
 
             refresh_token, access_token, expire_at = token_result
             self.context.result_store.save_token_result(
                 email=email,
                 password=password,
+                client_id=self.context.config.oauth2.client_id,
                 refresh_token=refresh_token,
                 access_token=access_token,
                 expire_at=expire_at,
@@ -177,7 +186,7 @@ class FlowRunner:
                 message="OAuth token 获取成功",
             )
             final_result = FlowResult.ok(stage=Stage.OAUTH.value)
-            self._save_final_result(task_id, email, final_result, started_at)
+            self._save_final_result(task_id, email, final_result, started_at, traffic_stats)
             return final_result
         except Exception as exc:
             logger.exception(
@@ -198,7 +207,7 @@ class FlowRunner:
                 message=result.error_message,
                 error_code=result.error_code,
             )
-            self._save_final_result(task_id, email, result, started_at)
+            self._save_final_result(task_id, email, result, started_at, traffic_stats)
             return result
         finally:
             self.controller.clean_up(page, "done_browser")

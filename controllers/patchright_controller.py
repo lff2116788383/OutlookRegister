@@ -7,8 +7,7 @@ from logger import logger
 class PatchrightController(BaseBrowserController):
     def launch_browser(self):
         try:
-            # Rotate proxy if configured
-            pm = ProxyManager(self.proxy, self.proxy_rotation_url)
+            pm = ProxyManager(self.proxy, self.dynamic_proxy_config)
             effective_proxy = pm.rotate_if_needed()
             
             p = sync_playwright().start() 
@@ -20,7 +19,7 @@ class PatchrightController(BaseBrowserController):
 
             logger.info(f"Launching patchright browser (Proxy: {effective_proxy or 'None'})")
             b = p.chromium.launch(
-                headless=False,            
+                headless=self.config.playwright.headless,
                 args=['--lang=zh-CN'],
                 proxy=proxy_settings
             )
@@ -125,7 +124,35 @@ class PatchrightController(BaseBrowserController):
     def get_thread_page(self):
         browser = self.get_thread_browser()
         context = browser.new_context()
-        return context.new_page()
+        page = context.new_page()
+        traffic_stats = self._init_traffic_stats()
+        setattr(page, "_traffic_stats", traffic_stats)
+
+        page.on("request", lambda request: self._on_request_traffic(request, traffic_stats))
+        page.on("response", lambda response: self._on_response_traffic(response, traffic_stats))
+
+        if self.enable_route_intercept:
+            page.route("**/*", lambda route, request: self._handle_route(route, request, traffic_stats))
+            logger.info("Route intercept enabled for patchright page")
+
+        return page
+
+    def _on_request_traffic(self, request, traffic_stats):
+        traffic_stats["request_count"] += 1
+        traffic_stats["request_bytes"] += self._estimate_request_bytes(request)
+
+    def _on_response_traffic(self, response, traffic_stats):
+        traffic_stats["response_count"] += 1
+        traffic_stats["response_bytes"] += self._estimate_response_bytes(response)
+
+    def _handle_route(self, route, request, traffic_stats):
+        resource_type = request.resource_type
+        if resource_type in {"image", "media", "font"}:
+            traffic_stats["blocked_count"] += 1
+            traffic_stats["blocked_types"][resource_type] += 1
+            route.abort()
+            return
+        route.continue_()
 
     def clean_up(self, page=None, type="all_browser"):
         if type == "done_browser" and page:

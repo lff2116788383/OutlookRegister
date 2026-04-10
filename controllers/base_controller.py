@@ -2,6 +2,7 @@ import random
 import threading
 import time
 from abc import ABC, abstractmethod
+from collections import Counter
 
 from faker import Faker
 
@@ -20,13 +21,14 @@ class BaseBrowserController(ABC):
         self.max_captcha_retries = config.max_captcha_retries
         self.enable_oauth2 = config.oauth2.enable_oauth2
         self.proxy = config.proxy.url
-        self.proxy_rotation_url = config.proxy.rotation_url
+        self.dynamic_proxy_config = config.oauth2.dynamic_residential_proxy
         self.sms_api_key = config.api_keys.sms_activate
         self.cleanup_lock = threading.Lock()
         self.active_resources = []
         self.browser_pool_size = max(1, min(config.browser_pool.max_browsers, config.concurrent_flows))
         self._browser_pool = []
         self._browser_pool_index = 0
+        self.enable_route_intercept = config.proxy.enable_route_intercept
 
     @abstractmethod
     def launch_browser(self):
@@ -43,6 +45,66 @@ class BaseBrowserController(ABC):
     @abstractmethod
     def get_thread_page(self):
         """返回当前线程使用的页面对象。"""
+
+    def _init_traffic_stats(self):
+        return {
+            "request_count": 0,
+            "response_count": 0,
+            "blocked_count": 0,
+            "request_bytes": 0,
+            "response_bytes": 0,
+            "blocked_types": Counter(),
+        }
+
+    def _format_bytes(self, size: int) -> str:
+        units = ["B", "KB", "MB", "GB"]
+        value = float(max(0, size))
+        for unit in units:
+            if value < 1024 or unit == units[-1]:
+                return f"{value:.2f}{unit}"
+            value /= 1024
+        return f"{value:.2f}GB"
+
+    def _estimate_request_bytes(self, request) -> int:
+        total = 0
+        try:
+            headers = request.headers or {}
+            for key, value in headers.items():
+                total += len(str(key).encode("utf-8")) + len(str(value).encode("utf-8")) + 4
+        except Exception:
+            pass
+        try:
+            post_data = request.post_data or ""
+            total += len(str(post_data).encode("utf-8"))
+        except Exception:
+            pass
+        return total
+
+    def _estimate_response_bytes(self, response) -> int:
+        total = 0
+        try:
+            headers = response.headers or {}
+            content_length = headers.get("content-length") or headers.get("Content-Length")
+            if content_length:
+                return max(0, int(content_length))
+            for key, value in headers.items():
+                total += len(str(key).encode("utf-8")) + len(str(value).encode("utf-8")) + 4
+        except Exception:
+            pass
+        return total
+
+    def _log_traffic_stats(self, stats: dict, email_address: str, stage: str) -> None:
+        logger.info(
+            "Traffic stats [%s] %s | requests=%s responses=%s blocked=%s upload≈%s download≈%s blocked_types=%s",
+            stage,
+            email_address,
+            stats.get("request_count", 0),
+            stats.get("response_count", 0),
+            stats.get("blocked_count", 0),
+            self._format_bytes(stats.get("request_bytes", 0)),
+            self._format_bytes(stats.get("response_bytes", 0)),
+            dict(stats.get("blocked_types", {})),
+        )
 
     def get_thread_browser(self):
         with self.cleanup_lock:
@@ -224,6 +286,7 @@ class BaseBrowserController(ABC):
         fake = Faker()
         final_email = email
         email_address = build_email_address(final_email, self.config.email_domain)
+        traffic_stats = getattr(page, "_traffic_stats", None)
 
         lastname = fake.last_name()
         firstname = fake.first_name()
@@ -406,18 +469,24 @@ class BaseBrowserController(ABC):
                 )
 
         except TimeoutError as exc:
+            if traffic_stats:
+                self._log_traffic_stats(traffic_stats, email_address, "register_failed")
             return self._fail(
                 ErrorCode.SELECTOR_NOT_FOUND,
                 f"Registration selector timeout: {exc}",
                 Stage.FILL_PROFILE,
             )
         except Exception as exc:
+            if traffic_stats:
+                self._log_traffic_stats(traffic_stats, email_address, "register_failed")
             return self._fail(
                 ErrorCode.UNKNOWN_ERROR,
                 f"Registration flow interrupted for {email_address}: {exc}",
                 Stage.FILL_PROFILE,
             )
 
+        if traffic_stats:
+            self._log_traffic_stats(traffic_stats, email_address, "register")
         logger.info("Successfully registered: %s", email_address)
 
         if not self.enable_oauth2:
