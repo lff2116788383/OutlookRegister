@@ -1,11 +1,15 @@
 import random
 import threading
 import time
-import json
 from abc import ABC, abstractmethod
+
 from faker import Faker
+
 from app_config import AppConfig
+from execution_models import ErrorCode, FlowResult, Stage
 from logger import logger
+from utils import build_email_address, random_email
+
 
 class BaseBrowserController(ABC):
     """所有浏览器控制器的公共接口与共享流程。"""
@@ -52,11 +56,171 @@ class BaseBrowserController(ABC):
 
         return self.thread_local.browser
 
-    def outlook_register(self, page, email, password):
-        """
-        通用逻辑:注册邮箱
-        """
+    def _fail(self, error_code: ErrorCode, message: str, stage: Stage, *, risk_detected: bool = False) -> FlowResult:
+        logger.error("[%s] %s", error_code.value, message)
+        return FlowResult.fail(error_code, message, stage, risk_detected=risk_detected)
+
+    def _first_visible_locator(self, page, candidates, timeout=20000):
+        deadline = time.time() + timeout / 1000
+        while time.time() < deadline:
+            for selector in candidates:
+                locator = page.locator(selector)
+                try:
+                    handles = locator.element_handles()
+                    if handles:
+                        try:
+                            handles[0].wait_for_element_state("visible", timeout=500)
+                        except Exception:
+                            pass
+                        logger.info("Matched selector: %s", selector)
+                        return locator.first
+                except Exception:
+                    continue
+            page.wait_for_timeout(300)
+        raise TimeoutError(f"No visible locator matched: {candidates}")
+
+    def _choose_email_domain(self, page) -> None:
+        domain = self.config.email_domain
+        trigger_selectors = [
+            "#LiveDomainBoxList",
+            '[aria-label*="@outlook.com"]',
+            '[aria-label*="@hotmail.com"]',
+            '[role="combobox"]',
+            'button[aria-haspopup="listbox"]',
+        ]
+        option_selectors = [
+            f'option[value="{domain}"]',
+            f'[role="option"]:text-is("@{domain}")',
+            f'[role="option"]:text-is("{domain}")',
+            f'text="@{domain}"',
+            f'text="{domain}"',
+        ]
+
+        try:
+            trigger = None
+            for selector in trigger_selectors:
+                locator = page.locator(selector)
+                if locator.count() > 0:
+                    trigger = locator.first
+                    break
+
+            if trigger is None:
+                logger.warning("Email domain selector not found, skip switching to %s", domain)
+                return
+
+            try:
+                current_text = (trigger.inner_text(timeout=500) or "").strip().lower()
+                if domain in current_text:
+                    logger.info("Email domain already set to %s", domain)
+                    return
+            except Exception:
+                pass
+
+            trigger.click(timeout=3000)
+            page.wait_for_timeout(300)
+
+            for selector in option_selectors:
+                option = page.locator(selector)
+                if option.count() > 0:
+                    option.first.click(timeout=3000, force=True)
+                    logger.info("Email domain switched to %s via %s", domain, selector)
+                    return
+
+            logger.warning("Email domain options not found for %s after opening selector", domain)
+        except Exception as exc:
+            logger.warning("Failed to switch email domain to %s: %s", domain, exc)
+
+    def _is_username_taken(self, page) -> bool:
+        messages = [
+            "该用户名已被占用",
+            "此用户名已被占用",
+            "已被占用",
+            "已被使用",
+            "That username is taken",
+            "This username is unavailable",
+        ]
+        for text in messages:
+            try:
+                if page.get_by_text(text).count() > 0:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _apply_suggested_username(self, page) -> str | None:
+        suggestion_selectors = [
+            '[role="button"]',
+            'button',
+            '[role="option"]',
+            'span',
+        ]
+        for selector in suggestion_selectors:
+            locator = page.locator(selector)
+            try:
+                count = min(locator.count(), 12)
+            except Exception:
+                continue
+            for index in range(count):
+                item = locator.nth(index)
+                try:
+                    text = (item.inner_text(timeout=300) or "").strip()
+                except Exception:
+                    continue
+                if not text:
+                    continue
+                normalized = text.replace("@", "").replace(self.config.email_domain, "").strip()
+                if not normalized:
+                    continue
+                compact = normalized.replace(" ", "")
+                if compact.isalnum() and any(char.isdigit() for char in compact):
+                    try:
+                        item.click(timeout=1500, force=True)
+                        page.wait_for_timeout(400)
+                        logger.info("Using suggested username: %s", compact)
+                        return compact
+                    except Exception:
+                        continue
+        return None
+
+    def _clear_email_input(self, email_input) -> None:
+        try:
+            email_input.click(timeout=1000)
+            email_input.fill("")
+        except Exception:
+            try:
+                email_input.press("Control+A")
+                email_input.press("Backspace")
+            except Exception:
+                pass
+
+    def _submit_username_with_retries(self, page, email_input, next_btn, email: str) -> str:
+        candidate = email
+        for attempt in range(4):
+            self._clear_email_input(email_input)
+            email_input.type(candidate, delay=0.006 * self.wait_time, timeout=10000)
+            next_btn.click(timeout=5000, force=True)
+            page.wait_for_timeout(1200)
+
+            if not self._is_username_taken(page):
+                if attempt > 0:
+                    logger.info("Resolved username collision, continue with %s", candidate)
+                return candidate
+
+            logger.warning("Username already taken: %s", build_email_address(candidate, self.config.email_domain))
+            suggested = self._apply_suggested_username(page)
+            if suggested:
+                candidate = suggested
+                continue
+
+            candidate = random_email()
+            logger.info("No suggested username available, retrying with regenerated prefix: %s", candidate)
+
+        raise TimeoutError("Username remained unavailable after retries")
+
+    def outlook_register(self, page, email, password) -> FlowResult:
         fake = Faker()
+        final_email = email
+        email_address = build_email_address(final_email, self.config.email_domain)
 
         lastname = fake.last_name()
         firstname = fake.first_name()
@@ -65,139 +229,142 @@ class BaseBrowserController(ABC):
         day = str(random.randint(1, 28))
 
         try:
-            logger.info(f"Navigating to outlook registration for {email}@outlook.com")
+            logger.info("Navigating to outlook registration for %s", email_address)
             page.goto("https://outlook.live.com/mail/0/?prompt=create_account", timeout=20000, wait_until="domcontentloaded")
-            page.get_by_text('同意并继续').wait_for(timeout=30000)
+            page.get_by_text("同意并继续").wait_for(timeout=30000)
             start_time = time.time()
             page.wait_for_timeout(0.1 * self.wait_time)
-            page.get_by_text('同意并继续').click(timeout=30000)
-
-        except Exception as e:
-            logger.error(f"Failed to enter registration page: {e}")
-            return False
+            page.get_by_text("同意并继续").click(timeout=30000)
+        except Exception as exc:
+            return self._fail(
+                ErrorCode.PAGE_NAVIGATION_FAILED,
+                f"Failed to enter registration page: {exc}",
+                Stage.NAVIGATE_REGISTER,
+            )
 
         page.wait_for_timeout(1500)
-        
+
         try:
-            logger.info(f"Filling account details for {email}")
+            logger.info("Filling account details for %s", email_address)
+            self._choose_email_domain(page)
 
-            def first_visible_locator(candidates, timeout=20000):
-                deadline = time.time() + timeout / 1000
-                while time.time() < deadline:
-                    for selector in candidates:
-                        locator = page.locator(selector)
-                        try:
-                            handles = locator.element_handles()
-                            if handles:
-                                try:
-                                    handles[0].wait_for_element_state("visible", timeout=500)
-                                except Exception:
-                                    pass
-                                logger.info("Matched selector: %s", selector)
-                                return locator.first
-                        except Exception:
-                            continue
-                    page.wait_for_timeout(300)
-                raise TimeoutError(f"No visible locator matched: {candidates}")
-
-            email_input = first_visible_locator(
+            email_input = self._first_visible_locator(
+                page,
                 [
                     '[aria-label="新建电子邮件"]',
-                    '#MemberName',
+                    "#MemberName",
                     'input[name="MemberName"]',
                     '[aria-label="New email"]',
                     'input[placeholder="name@example.com"]',
                     'input[placeholder*="@outlook.com"]',
                     'input[type="email"]',
                     'input[aria-describedby*="MemberName"]',
-                ]
+                ],
             )
-            email_input.type(email, delay=0.006 * self.wait_time, timeout=10000)
 
-            next_btn = first_visible_locator(
+            next_btn = self._first_visible_locator(
+                page,
                 [
                     '[data-testid="primaryButton"]',
-                    '#iSignupAction',
+                    "#iSignupAction",
                     'button[type="submit"]',
                     'input[type="submit"]',
                 ],
                 timeout=10000,
             )
-            next_btn.click(timeout=5000)
+            final_email = self._submit_username_with_retries(page, email_input, next_btn, email)
+            email_address = build_email_address(final_email, self.config.email_domain)
 
             page.wait_for_timeout(0.02 * self.wait_time)
 
-            pwd_input = first_visible_locator(
+            pwd_input = self._first_visible_locator(
+                page,
                 [
                     '[type="password"]',
-                    '#PasswordInput',
+                    "#PasswordInput",
                     'input[name="Password"]',
-                ]
+                ],
             )
             pwd_input.type(password, delay=0.004 * self.wait_time, timeout=10000)
 
             page.wait_for_timeout(0.02 * self.wait_time)
-            next_btn = first_visible_locator(
+            next_btn = self._first_visible_locator(
+                page,
                 [
                     '[data-testid="primaryButton"]',
-                    '#iSignupAction',
+                    "#iSignupAction",
                     'button[type="submit"]',
                     'input[type="submit"]',
                 ],
                 timeout=10000,
             )
-            next_btn.click(timeout=5000)
-            
+            next_btn.click(timeout=5000, force=True)
+
             page.wait_for_timeout(0.03 * self.wait_time)
             page.locator('[name="BirthYear"]').fill(year, timeout=10000)
 
             try:
                 page.wait_for_timeout(0.02 * self.wait_time)
-                page.locator('[name="BirthMonth"]').select_option(value=month, timeout=5000)
+                page.locator('[name="BirthMonth"]').select_option(value=month, timeout=1000)
                 page.wait_for_timeout(0.05 * self.wait_time)
                 page.locator('[name="BirthDay"]').select_option(value=day, timeout=5000)
             except Exception:
                 logger.info("Falling back to manual selection for birth month/day")
                 page.locator('[name="BirthMonth"]').click()
                 page.wait_for_timeout(0.02 * self.wait_time)
-                page.locator(f'[role="option"]:text-is("{month}月")').click()
+                page.locator(f'[role="option"]:text-is("{month}月")').click(force=True)
                 page.wait_for_timeout(0.04 * self.wait_time)
                 page.locator('[name="BirthDay"]').click()
                 page.wait_for_timeout(0.03 * self.wait_time)
-                page.locator(f'[role="option"]:text-is("{day}日")').click()
-                page.locator('[data-testid="primaryButton"]').click(timeout=5000)
+                page.locator(f'[role="option"]:text-is("{day}日")').click(force=True)
+                page.locator('[data-testid="primaryButton"]').click(timeout=5000, force=True)
 
-            page.locator('#lastNameInput').type(lastname, delay=0.002 * self.wait_time, timeout=10000)
+            page.locator("#lastNameInput").type(lastname, delay=0.002 * self.wait_time, timeout=10000)
             page.wait_for_timeout(0.02 * self.wait_time)
-            page.locator('#firstNameInput').fill(firstname, timeout=10000)
+            page.locator("#firstNameInput").fill(firstname, timeout=10000)
 
             if time.time() - start_time < self.wait_time / 1000:
                 page.wait_for_timeout(self.wait_time - (time.time() - start_time) * 1000)
-            
-            page.locator('[data-testid="primaryButton"]').click(timeout=5000)
-            
-            # Wait for any post-submission blockers
-            page.wait_for_timeout(1000)
 
-            if page.get_by_text('一些异常活动').count() or page.get_by_text('此站点正在维护').count() > 0:
-                logger.error(f"IP Rate limited or site maintenance for {email}")
-                return False
+            page.locator('[data-testid="primaryButton"]').click(timeout=5000, force=True)
+            try:
+                page.locator('span > [href="https://go.microsoft.com/fwlink/?LinkID=521839"]').wait_for(
+                    state="detached",
+                    timeout=22000,
+                )
+            except Exception:
+                page.wait_for_timeout(1000)
 
-            # SMS Verification handling
-            if page.get_by_text('添加电话号码').count() > 0 or page.locator('[id="PhoneNum"]').count() > 0:
-                logger.info(f"SMS verification required for {email}")
+            has_risk = page.get_by_text("一些异常活动").count() > 0
+            has_maintenance = page.get_by_text("此站点正在维护").count() > 0 or page.get_by_text(
+                "此站点正在维护，暂时无法使用，请稍后重试。"
+            ).count() > 0
+            if has_risk or has_maintenance:
+                error_code = ErrorCode.RATE_LIMITED if has_risk else ErrorCode.SITE_MAINTENANCE
+                message = "IP rate limited" if has_risk else "Site maintenance detected"
+                return self._fail(error_code, message, Stage.FILL_PROFILE, risk_detected=True)
+
+            if page.get_by_text("添加电话号码").count() > 0 or page.locator('[id="PhoneNum"]').count() > 0:
+                logger.info("SMS verification required for %s", email_address)
                 if not self.sms_api_key:
-                    logger.info("SMS Activate key missing, fallback to legacy behavior and mark as failed")
-                    return False
+                    return self._fail(
+                        ErrorCode.SMS_REQUIRED_NO_KEY,
+                        "SMS verification required but SmsActivate key missing",
+                        Stage.SMS_VERIFICATION,
+                    )
 
                 from services import SmsActivate
-                sms = SmsActivate(self.sms_api_key)
-                phone_id, phone_num = sms.get_number(service='mm', country=0)
-                if not phone_num:
-                    logger.error("Failed to get phone number from SMS Activate")
-                    return False
 
-                logger.info(f"Using phone number: {phone_num}")
+                sms = SmsActivate(self.sms_api_key)
+                phone_id, phone_num = sms.get_number(service="mm", country=0)
+                if not phone_num:
+                    return self._fail(
+                        ErrorCode.SMS_GET_NUMBER_FAILED,
+                        "Failed to get phone number from SMS Activate",
+                        Stage.SMS_VERIFICATION,
+                    )
+
+                logger.info("Using phone number: %s", phone_num)
                 phone_input = page.locator('input[type="tel"]')
                 if phone_input.count() == 0:
                     phone_input = page.locator('[id="PhoneNum"]')
@@ -206,52 +373,63 @@ class BaseBrowserController(ABC):
 
                 logger.info("Waiting for SMS code...")
                 code = None
-                for _ in range(20):
+                max_sms_wait_cycles = self.config.risk_control.max_sms_wait_cycles
+                for _ in range(max_sms_wait_cycles):
                     page.wait_for_timeout(5000)
                     code = sms.get_status(phone_id)
                     if code:
                         break
 
                 if code:
-                    logger.info(f"Received SMS code: {code}")
+                    logger.info("Received SMS code: %s", code)
                     page.locator('input[id="PhoneProofCode"]').fill(code)
                     page.locator('[id="iSignupAction"]').click(timeout=10000)
                     sms.set_status(phone_id, 6)
                 else:
-                    logger.error("SMS code timeout")
                     sms.set_status(phone_id, 8)
-                    return False
+                    return self._fail(
+                        ErrorCode.SMS_CODE_TIMEOUT,
+                        "SMS code timeout",
+                        Stage.SMS_VERIFICATION,
+                    )
 
-            # Captcha handling
-            if not self.handle_captcha(page):
-                logger.error(f"Captcha solving failed for {email}")
-                return False
+            captcha_ok = self.handle_captcha(page)
+            if not captcha_ok:
+                return self._fail(
+                    ErrorCode.CAPTCHA_FAILED,
+                    f"Captcha solving failed for {email_address}",
+                    Stage.CAPTCHA,
+                    risk_detected=True,
+                )
 
-        except Exception as e:
-            logger.error(f"Registration flow interrupted for {email}: {e}")
-            return False 
-        
-        logger.info(f"Successfully registered: {email}@outlook.com")
-        from app_config import LOGGED_EMAIL_PATH, UNLOGGED_EMAIL_PATH
-        filename = LOGGED_EMAIL_PATH if self.enable_oauth2 else UNLOGGED_EMAIL_PATH
-        with open(filename, 'a', encoding='utf-8') as f:
-            f.write(f"{email}@outlook.com: {password}\n")
+        except TimeoutError as exc:
+            return self._fail(
+                ErrorCode.SELECTOR_NOT_FOUND,
+                f"Registration selector timeout: {exc}",
+                Stage.FILL_PROFILE,
+            )
+        except Exception as exc:
+            return self._fail(
+                ErrorCode.UNKNOWN_ERROR,
+                f"Registration flow interrupted for {email_address}: {exc}",
+                Stage.FILL_PROFILE,
+            )
+
+        logger.info("Successfully registered: %s", email_address)
 
         if not self.enable_oauth2:
-            return True
-        
+            return FlowResult.ok(stage=Stage.POST_REGISTER.value)
+
         try:
-            cancel_btn = page.get_by_text('取消')
+            cancel_btn = page.get_by_text("取消")
             if cancel_btn.count() > 0:
-                cancel_btn.click(timeout=10000)
-            
-            # Handling passkey popup
-            if page.get_by_text('无法创建通行密钥').count() > 0:
-                 page.get_by_text('取消').click(timeout=7000)
+                cancel_btn.click(timeout=20000)
+
+            if page.get_by_text("无法创建通行密钥").count() > 0:
+                page.get_by_text("取消").click(timeout=7000)
 
             page.locator('[aria-label="新邮件"]').wait_for(timeout=26000)
-            return True
-
-        except Exception as e:
-            logger.warning(f"Registered {email} but failed to enter inbox: {e}")
-            return True # Still count as success since account is created
+            return FlowResult.ok(stage=Stage.POST_REGISTER.value)
+        except Exception as exc:
+            logger.warning("Registered %s but failed to enter inbox: %s", email_address, exc)
+            return FlowResult.ok(stage=Stage.POST_REGISTER.value)

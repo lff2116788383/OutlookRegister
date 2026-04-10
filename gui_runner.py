@@ -7,6 +7,8 @@ from typing import Callable
 
 from PySide6.QtCore import QObject, QThread, Signal
 
+from logger import GuiSignalHandler, logger as app_logger
+
 
 class GuiLogEmitter(io.TextIOBase):
     def __init__(self, callback: Callable[[str], None]):
@@ -32,9 +34,16 @@ class TaskWorker(QObject):
         self.is_cancelled = False
 
     def run(self) -> None:
-        logger = GuiLogEmitter(self.log_message.emit)
+        log_emitter = GuiLogEmitter(self.log_message.emit)
+        gui_handler = GuiSignalHandler(self.log_message.emit)
+        if app_logger.handlers:
+            gui_handler.setFormatter(app_logger.handlers[0].formatter)
+        else:
+            gui_handler.setFormatter(None)
+        gui_handler.setLevel(app_logger.level)
+        app_logger.addHandler(gui_handler)
         try:
-            with redirect_stdout(logger), redirect_stderr(logger):
+            with redirect_stdout(log_emitter), redirect_stderr(log_emitter):
                 self.task_callable(lambda: self.is_cancelled)
             if self.is_cancelled:
                 self.finished.emit(False, "任务已被手动停止")
@@ -43,9 +52,12 @@ class TaskWorker(QObject):
         except Exception:
             self.log_message.emit(traceback.format_exc())
             self.finished.emit(False, "任务执行失败")
-            
+        finally:
+            app_logger.removeHandler(gui_handler)
+
     def stop(self) -> None:
         self.is_cancelled = True
+
 
 class TaskThreadController(QObject):
     log_message = Signal(str)

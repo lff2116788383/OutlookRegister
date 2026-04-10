@@ -40,8 +40,17 @@ class ProxyConfig:
 
 
 @dataclass(slots=True)
+class RiskControlConfig:
+    max_consecutive_risk: int
+    max_failure_streak: int
+    max_task_duration_seconds: int
+    max_sms_wait_cycles: int
+
+
+@dataclass(slots=True)
 class AppConfig:
     choose_browser: str
+    email_domain: str
     proxy: ProxyConfig
     bot_protection_wait: int
     max_captcha_retries: int
@@ -50,6 +59,7 @@ class AppConfig:
     oauth2: OAuth2Config
     api_keys: ApiKeysConfig
     playwright: PlaywrightConfig
+    risk_control: RiskControlConfig
     raw: Dict[str, Any]
 
     @classmethod
@@ -60,6 +70,7 @@ class AppConfig:
         oauth2 = data.get("oauth2", {})
         api_keys = data.get("api_keys", {})
         playwright = data.get("playwright", {})
+        risk_control = data.get("risk_control", {})
         proxy_value = data.get("proxy", "")
         proxy_rotation_url = data.get("proxy_rotation_url", "")
 
@@ -69,8 +80,13 @@ class AppConfig:
         else:
             proxy_url = str(proxy_value or "")
 
+        email_domain = str(data.get("email_domain", "outlook.com") or "outlook.com").strip().lower()
+        if email_domain not in {"hotmail.com", "outlook.com"}:
+            email_domain = "outlook.com"
+
         return cls(
             choose_browser=data.get("choose_browser", "patchright"),
+            email_domain=email_domain,
             proxy=ProxyConfig(
                 url=proxy_url,
                 rotation_url=proxy_rotation_url,
@@ -92,12 +108,19 @@ class AppConfig:
             playwright=PlaywrightConfig(
                 browser_path=playwright.get("browser_path", ""),
             ),
+            risk_control=RiskControlConfig(
+                max_consecutive_risk=int(risk_control.get("max_consecutive_risk", 3)),
+                max_failure_streak=int(risk_control.get("max_failure_streak", 5)),
+                max_task_duration_seconds=int(risk_control.get("max_task_duration_seconds", 180)),
+                max_sms_wait_cycles=int(risk_control.get("max_sms_wait_cycles", 20)),
+            ),
             raw=data,
         )
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "choose_browser": self.choose_browser,
+            "email_domain": self.email_domain,
             "proxy": self.proxy.url,
             "proxy_rotation_url": self.proxy.rotation_url,
             "api_keys": {
@@ -116,6 +139,12 @@ class AppConfig:
             },
             "playwright": {
                 "browser_path": self.playwright.browser_path,
+            },
+            "risk_control": {
+                "max_consecutive_risk": self.risk_control.max_consecutive_risk,
+                "max_failure_streak": self.risk_control.max_failure_streak,
+                "max_task_duration_seconds": self.risk_control.max_task_duration_seconds,
+                "max_sms_wait_cycles": self.risk_control.max_sms_wait_cycles,
             },
             "info": self.raw.get(
                 "info",

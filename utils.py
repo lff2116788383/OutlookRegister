@@ -25,6 +25,13 @@ def random_email() -> str:
     return "".join(char for char in email if char.isalnum() or char == ".")
 
 
+def build_email_address(email: str, domain: str) -> str:
+    normalized_domain = str(domain or "outlook.com").strip().lower()
+    if normalized_domain not in {"hotmail.com", "outlook.com"}:
+        normalized_domain = "outlook.com"
+    return f"{email}@{normalized_domain}"
+
+
 def generate_strong_password(length: int | None = None) -> str:
     password_length = length or random.randint(11, 15)
     chars = string.ascii_letters + string.digits + _PASSWORD_SPECIALS

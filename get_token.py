@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, quote
 import requests
 
 from app_config import AppConfig
+from utils import build_email_address
 
 
 def get_proxy():
@@ -41,9 +42,9 @@ def generate_code_challenge(code_verifier: str) -> str:
     return base64.urlsafe_b64encode(sha256_hash).decode().rstrip("=")
 
 
-def handle_oauth2_form(page, email: str) -> None:
+def handle_oauth2_form(page, email: str, config: AppConfig) -> None:
     try:
-        page.locator('[name="loginfmt"]').fill(f"{email}@outlook.com", timeout=20000)
+        page.locator('[name="loginfmt"]').fill(build_email_address(email, config.email_domain), timeout=20000)
         page.locator("#idSIButton9").click(timeout=7000)
         page.locator('[data-testid="appConsentPrimaryButton"]').click(timeout=20000)
     except Exception:
@@ -86,7 +87,7 @@ def get_access_token(page, email: str, config: AppConfig):
                     return False, False, False
                 continue
 
-        handle_oauth2_form(page, email)
+        handle_oauth2_form(page, email, config)
         response = response_info.value
         callback_url = response.url
 

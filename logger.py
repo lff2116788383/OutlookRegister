@@ -2,12 +2,30 @@ from __future__ import annotations
 
 import logging
 from logging.handlers import RotatingFileHandler
+from typing import Callable
 
 from app_config import RESULTS_DIR, ensure_runtime_dirs
 
 ensure_runtime_dirs()
 
 logger = logging.getLogger("outlook_register")
+
+
+class GuiSignalHandler(logging.Handler):
+    def __init__(self, callback: Callable[[str], None]) -> None:
+        super().__init__()
+        self._callback = callback
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            message = self.format(record)
+            if not message.endswith("\n"):
+                message += "\n"
+            self._callback(message)
+        except Exception:
+            self.handleError(record)
+
+
 if not logger.handlers:
     logger.setLevel(logging.INFO)
     formatter = logging.Formatter(
