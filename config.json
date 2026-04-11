@@ -1,5 +1,5 @@
 {
-    "choose_browser": "patchright",
+    "choose_browser": "playwright",
     "email_domain": "outlook.com",
     "proxy": "http://127.0.0.1:7897",
     "enable_route_intercept": true,
@@ -12,9 +12,9 @@
     "concurrent_flows": 1,
     "max_tasks": 1,
     "oauth2": {
-        "enable_oauth2": false,
-        "client_id": "",
-        "redirect_url": "",
+        "enable_oauth2": true,
+        "client_id": "d2d1a406-11bb-4ab3-9b7d-719ae576702d",
+        "redirect_url": "http://localhost:8000",
         "Scopes": [
             "offline_access",
             "https://graph.microsoft.com/Mail.ReadWrite",

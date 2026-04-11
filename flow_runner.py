@@ -67,12 +67,13 @@ class FlowRunner:
             password=generate_strong_password(),
         )
 
-    def process_single_flow_with_credentials(self, task_id: int, email: str, password: str) -> FlowResult:
+    def process_single_flow_with_credentials(self, task_id: int, email: str, password: str, retry_mode: str = "full") -> FlowResult:
         page = None
         traffic_stats = None
         started_at = time.time()
         max_duration_seconds = self.context.config.risk_control.max_task_duration_seconds
-        self._log_event(task_id=task_id, email=email, stage=Stage.INIT.value, status="started", message="任务开始")
+        effective_email = email
+        self._log_event(task_id=task_id, email=email, stage=Stage.INIT.value, status="started", message=f"任务开始（模式: {retry_mode}）")
         try:
             page = self.controller.get_thread_page()
             traffic_stats = getattr(page, "_traffic_stats", None) if page is not None else None
@@ -93,60 +94,68 @@ class FlowRunner:
                 self._save_final_result(task_id, email, result, started_at, traffic_stats)
                 return result
 
-            result = self.controller.outlook_register(page, email, password)
-            if not result.success:
+            if retry_mode == "oauth_only":
+                final_email = email
+                final_email_address = build_email_address(final_email, self.context.config.email_domain)
+                logger.info("Retrying OAuth only for %s", final_email_address)
+            else:
+                result = self.controller.outlook_register(page, email, password)
+                if not result.success:
+                    self._log_event(
+                        task_id=task_id,
+                        email=email,
+                        stage=result.stage,
+                        status="failed",
+                        message=result.error_message,
+                        error_code=result.error_code,
+                    )
+                    self._save_final_result(task_id, email, result, started_at, traffic_stats)
+                    return result
+
+                if time.time() - started_at > max_duration_seconds:
+                    result = FlowResult.fail(
+                        ErrorCode.TASK_TIMEOUT,
+                        f"Task exceeded duration budget: {max_duration_seconds}s",
+                        Stage.POST_REGISTER,
+                    )
+                    self._log_event(
+                        task_id=task_id,
+                        email=email,
+                        stage=result.stage,
+                        status="failed",
+                        message=result.error_message,
+                        error_code=result.error_code,
+                    )
+                    self._save_final_result(task_id, email, result, started_at, traffic_stats)
+                    return result
+
+                final_email = str(result.metadata.get("final_email", email) or email)
+                final_email_address = str(
+                    result.metadata.get("email_address")
+                    or build_email_address(final_email, self.context.config.email_domain)
+                )
+                effective_email = final_email
+                self.context.result_store.save_registered_email(
+                    email=final_email,
+                    password=password,
+                    oauth_enabled=self.controller.enable_oauth2,
+                    domain=self.context.config.email_domain,
+                )
+                logger.info("Email registration succeeded for %s", final_email_address)
                 self._log_event(
                     task_id=task_id,
-                    email=email,
-                    stage=result.stage,
-                    status="failed",
-                    message=result.error_message,
-                    error_code=result.error_code,
+                    email=final_email,
+                    stage=Stage.POST_REGISTER.value,
+                    status="success",
+                    message=f"邮箱注册成功: {final_email_address}",
                 )
-                self._save_final_result(task_id, email, result, started_at, traffic_stats)
-                return result
 
-            if time.time() - started_at > max_duration_seconds:
-                result = FlowResult.fail(
-                    ErrorCode.TASK_TIMEOUT,
-                    f"Task exceeded duration budget: {max_duration_seconds}s",
-                    Stage.POST_REGISTER,
-                )
-                self._log_event(
-                    task_id=task_id,
-                    email=email,
-                    stage=result.stage,
-                    status="failed",
-                    message=result.error_message,
-                    error_code=result.error_code,
-                )
-                self._save_final_result(task_id, email, result, started_at, traffic_stats)
-                return result
+                if not self.controller.enable_oauth2:
+                    final_result = FlowResult.ok(stage=Stage.POST_REGISTER.value)
+                    self._save_final_result(task_id, final_email, final_result, started_at, traffic_stats)
+                    return final_result
 
-            self.context.result_store.save_registered_email(
-                email=email,
-                password=password,
-                oauth_enabled=self.controller.enable_oauth2,
-                domain=self.context.config.email_domain,
-            )
-            logger.info(
-                "Email registration succeeded for %s",
-                build_email_address(email, self.context.config.email_domain),
-            )
-            self._log_event(
-                task_id=task_id,
-                email=email,
-                stage=Stage.POST_REGISTER.value,
-                status="success",
-                message="邮箱注册成功",
-            )
-
-            if not self.controller.enable_oauth2:
-                final_result = FlowResult.ok(stage=Stage.POST_REGISTER.value)
-                self._save_final_result(task_id, email, final_result, started_at, traffic_stats)
-                return final_result
-
-            token_result = get_access_token(page, email, self.context.config)
+            token_result = get_access_token(page, final_email, self.context.config)
             if not token_result[0]:
                 result = FlowResult.fail(
                     ErrorCode.OAUTH_FAILED,
@@ -155,18 +164,18 @@ class FlowRunner:
                 )
                 self._log_event(
                     task_id=task_id,
-                    email=email,
+                    email=final_email,
                     stage=result.stage,
                     status="failed",
                     message=result.error_message,
                     error_code=result.error_code,
                 )
-                self._save_final_result(task_id, email, result, started_at, traffic_stats)
+                self._save_final_result(task_id, final_email, result, started_at, traffic_stats)
                 return result
 
             refresh_token, access_token, expire_at = token_result
             self.context.result_store.save_token_result(
-                email=email,
+                email=final_email,
                 password=password,
                 client_id=self.context.config.oauth2.client_id,
                 refresh_token=refresh_token,
@@ -176,22 +185,28 @@ class FlowRunner:
             )
             logger.info(
                 "OAuth token acquisition succeeded for %s",
-                build_email_address(email, self.context.config.email_domain),
+                final_email_address,
             )
             self._log_event(
                 task_id=task_id,
-                email=email,
+                email=final_email,
                 stage=Stage.OAUTH.value,
                 status="success",
-                message="OAuth token 获取成功",
+                message=f"OAuth token 获取成功: {final_email_address}",
             )
-            final_result = FlowResult.ok(stage=Stage.OAUTH.value)
-            self._save_final_result(task_id, email, final_result, started_at, traffic_stats)
+            final_result = FlowResult.ok(
+                stage=Stage.OAUTH.value,
+                metadata={
+                    "final_email": final_email,
+                    "email_address": final_email_address,
+                },
+            )
+            self._save_final_result(task_id, final_email, final_result, started_at, traffic_stats)
             return final_result
         except Exception as exc:
             logger.exception(
                 "Single flow failed for %s: %s",
-                build_email_address(email, self.context.config.email_domain),
+                build_email_address(effective_email, self.context.config.email_domain),
                 exc,
             )
             result = FlowResult.fail(
@@ -201,13 +216,13 @@ class FlowRunner:
             )
             self._log_event(
                 task_id=task_id,
-                email=email,
+                email=effective_email,
                 stage=result.stage,
                 status="failed",
                 message=result.error_message,
                 error_code=result.error_code,
             )
-            self._save_final_result(task_id, email, result, started_at, traffic_stats)
+            self._save_final_result(task_id, effective_email, result, started_at, traffic_stats)
             return result
         finally:
             self.controller.clean_up(page, "done_browser")

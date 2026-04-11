@@ -40,6 +40,7 @@ class TaskDB:
                     error_message TEXT DEFAULT '',
                     stage TEXT DEFAULT '',
                     risk_detected INTEGER NOT NULL DEFAULT 0,
+                    retry_mode TEXT NOT NULL DEFAULT 'full',
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
@@ -54,29 +55,31 @@ class TaskDB:
                 connection.execute("ALTER TABLE tasks ADD COLUMN stage TEXT DEFAULT ''")
             if not self._column_exists(connection, "risk_detected"):
                 connection.execute("ALTER TABLE tasks ADD COLUMN risk_detected INTEGER NOT NULL DEFAULT 0")
+            if not self._column_exists(connection, "retry_mode"):
+                connection.execute("ALTER TABLE tasks ADD COLUMN retry_mode TEXT NOT NULL DEFAULT 'full'")
             connection.commit()
 
     def create_task(self, email: str, password: str) -> None:
         with self._lock, self._connect() as connection:
             connection.execute(
-                "INSERT INTO tasks (email, password, status, error_code, error_message, stage, risk_detected) VALUES (?, ?, 'pending', '', '', '', 0)",
+                "INSERT INTO tasks (email, password, status, error_code, error_message, stage, risk_detected, retry_mode) VALUES (?, ?, 'pending', '', '', '', 0, 'full')",
                 (email, password),
             )
             connection.commit()
 
-    def get_pending_tasks(self, limit: int = 1) -> List[Tuple[int, str, str]]:
+    def get_pending_tasks(self, limit: int = 1) -> List[Tuple[int, str, str, str]]:
         with self._lock, self._connect() as connection:
             rows = connection.execute(
-                "SELECT id, email, password FROM tasks WHERE status = 'pending' ORDER BY id ASC LIMIT ?",
+                "SELECT id, email, password, retry_mode FROM tasks WHERE status = 'pending' ORDER BY id ASC LIMIT ?",
                 (limit,),
             ).fetchall()
-            for task_id, _, _ in rows:
+            for task_id, _, _, _ in rows:
                 connection.execute(
                     "UPDATE tasks SET status = 'reserved', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                     (task_id,),
                 )
             connection.commit()
-            return [(int(task_id), str(email), str(password)) for task_id, email, password in rows]
+            return [(int(task_id), str(email), str(password), str(retry_mode or 'full')) for task_id, email, password, retry_mode in rows]
 
     def update_task_status(
         self,
@@ -91,10 +94,18 @@ class TaskDB:
             connection.execute(
                 """
                 UPDATE tasks
-                SET status = ?, error_code = ?, error_message = ?, stage = ?, risk_detected = ?, updated_at = CURRENT_TIMESTAMP
+                SET status = ?, error_code = ?, error_message = ?, stage = ?, risk_detected = ?, retry_mode = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
-                (status, error_code, error_message, stage, int(risk_detected), task_id),
+                (
+                    status,
+                    error_code,
+                    error_message,
+                    stage,
+                    int(risk_detected),
+                    "oauth_only" if error_code == "OAUTH_FAILED" else "full",
+                    task_id,
+                ),
             )
             connection.commit()
 
@@ -173,7 +184,7 @@ class TaskDB:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT id, email, status, stage, error_code, error_message, risk_detected, created_at, updated_at
+                SELECT id, email, status, stage, error_code, error_message, risk_detected, retry_mode, created_at, updated_at
                 FROM tasks
                 WHERE id = ?
                 """,
@@ -189,8 +200,9 @@ class TaskDB:
             "error_code": str(row[4] or "-"),
             "error_message": str(row[5] or "-"),
             "risk_detected": "是" if int(row[6]) else "否",
-            "created_at": str(row[7]),
-            "updated_at": str(row[8]),
+            "retry_mode": str(row[7] or "full"),
+            "created_at": str(row[8]),
+            "updated_at": str(row[9]),
         }
 
     def reset_in_progress_tasks(self) -> None:

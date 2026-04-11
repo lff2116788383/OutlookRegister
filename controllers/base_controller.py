@@ -490,7 +490,13 @@ class BaseBrowserController(ABC):
         logger.info("Successfully registered: %s", email_address)
 
         if not self.enable_oauth2:
-            return FlowResult.ok(stage=Stage.POST_REGISTER.value)
+            return FlowResult.ok(
+                stage=Stage.POST_REGISTER.value,
+                metadata={
+                    "final_email": final_email,
+                    "email_address": email_address,
+                },
+            )
 
         try:
             cancel_btn = page.get_by_text("取消")
@@ -501,7 +507,19 @@ class BaseBrowserController(ABC):
                 page.get_by_text("取消").click(timeout=7000)
 
             page.locator('[aria-label="新邮件"]').wait_for(timeout=26000)
-            return FlowResult.ok(stage=Stage.POST_REGISTER.value)
+            return FlowResult.ok(
+                stage=Stage.POST_REGISTER.value,
+                metadata={
+                    "final_email": final_email,
+                    "email_address": email_address,
+                },
+            )
         except Exception as exc:
             logger.warning("Registered %s but failed to enter inbox: %s", email_address, exc)
-            return FlowResult.ok(stage=Stage.POST_REGISTER.value)
+            return FlowResult.ok(
+                stage=Stage.POST_REGISTER.value,
+                metadata={
+                    "final_email": final_email,
+                    "email_address": email_address,
+                },
+            )

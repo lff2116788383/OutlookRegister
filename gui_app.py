@@ -707,7 +707,7 @@ class MainWindow(QMainWindow):
             self.log_path = Path(file_path)
             self._load_log_file()
 
-    def _load_config_to_form(self, config_path: Path | None = None) -> None:
+    def _load_config_to_form(self, config_path: Path | None = None, show_popup: bool = True) -> None:
         config = AppConfig.load(config_path or CONFIG_PATH)
 
         self.browser_combo.setCurrentText(config.choose_browser)
@@ -740,6 +740,8 @@ class MainWindow(QMainWindow):
         self.dynamic_proxy_session_input.setText(config.oauth2.dynamic_residential_proxy.session)
         self.dynamic_proxy_sticky_minutes_input.setValue(config.oauth2.dynamic_residential_proxy.sticky_minutes)
         self.status_label.setText(f"已加载配置: {config_path or CONFIG_PATH}")
+        if show_popup:
+            QMessageBox.information(self, "重新加载完成", f"已重新加载配置:\n{config_path or CONFIG_PATH}")
 
     def _build_config_from_form(self) -> AppConfig:
         scopes = [
@@ -780,16 +782,20 @@ class MainWindow(QMainWindow):
         config.oauth2.dynamic_residential_proxy.sticky_minutes = self.dynamic_proxy_sticky_minutes_input.value()
         return config
 
-    def _save_form_to_config(self) -> None:
+    def _save_form_to_config(self, show_popup: bool = True) -> bool:
         config = self._build_config_from_form()
         try:
             config.validate()
         except ConfigValidationError as exc:
             QMessageBox.warning(self, "配置校验失败", "\n".join(exc.errors))
             self.status_label.setText("配置校验失败")
-            return
+            return False
+
         config.save()
+        if show_popup:
+            QMessageBox.information(self, "保存成功", f"配置已保存到:\n{CONFIG_PATH}")
         self.status_label.setText("配置已保存")
+        return True
 
     def _highlight_log_line(self, text: str) -> None:
         cursor = self.log_output.textCursor()
@@ -888,15 +894,32 @@ class MainWindow(QMainWindow):
         if detail.get("status") != "failed":
             QMessageBox.information(self, "提示", "仅支持重跑失败任务")
             return
+        if self.task_controller is not None:
+            QMessageBox.information(self, "提示", "当前已有任务在执行，请等待当前批次完成后再重跑")
+            return
+
         db.reset_task_to_pending(task_id)
-        self.status_label.setText(f"任务 {task_id} 已重置为 pending")
+        retry_mode = detail.get("retry_mode", "full")
+        mode_label = "仅 OAuth" if retry_mode == "oauth_only" else "全流程"
         self._refresh_result_files()
+        self.status_label.setText(f"任务 {task_id} 已重置并开始重跑（{mode_label}）")
+        self._start_task(show_popup=False)
 
     def _retry_failed_tasks(self) -> None:
+        if self.task_controller is not None:
+            QMessageBox.information(self, "提示", "当前已有任务在执行，请等待当前批次完成后再重跑")
+            return
+
         db = TaskDB()
         count = db.reset_failed_tasks_to_pending()
-        self.status_label.setText(f"已重置 {count} 条失败任务")
+        if count <= 0:
+            QMessageBox.information(self, "提示", "当前没有失败任务可重跑")
+            self.status_label.setText("当前没有失败任务可重跑")
+            return
+
         self._refresh_result_files()
+        self.status_label.setText(f"已重置 {count} 条失败任务，并已开始自动重跑")
+        self._start_task(show_popup=False)
 
     def _refresh_risk_status(self) -> None:
         db = TaskDB()
@@ -1022,15 +1045,19 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"代理检测完成: {result['message']}")
 
     def _prepare_tasks(self) -> None:
-        self._save_form_to_config()
+        if not self._save_form_to_config(show_popup=False):
+            return
+
         config = AppConfig.load()
         db = TaskDB()
         db.clear_all_tasks()
         for _ in range(config.max_tasks):
             db.create_task(random_email(), generate_strong_password())
+
+        QMessageBox.information(self, "准备完成", f"任务库已重建，共生成 {config.max_tasks} 条任务")
         self.status_label.setText(f"已初始化任务库，共 {config.max_tasks} 条")
         self.metric_tasks_card.setText(f"任务池\n待执行 {config.max_tasks} / 运行中 0")
-        self._refresh_task_table()
+        self._refresh_result_files()
         logger.info("Task database reinitialized from GUI")
 
     def _create_task_callable(self):
@@ -1060,7 +1087,7 @@ class MainWindow(QMainWindow):
 
             def process_task(task_item) -> FlowResult:
                 nonlocal success_count, failed_count
-                task_id, email, password = task_item
+                task_id, email, password, retry_mode = task_item
 
                 if is_cancelled() or circuit_breaker.should_stop():
                     logger.info("任务已被手动停止或风险熔断终止")
@@ -1080,7 +1107,12 @@ class MainWindow(QMainWindow):
                     )
 
                 db.update_task_status(task_id, "in_progress", stage=Stage.INIT.value)
-                result = runner.process_single_flow_with_credentials(task_id=task_id, email=email, password=password)
+                result = runner.process_single_flow_with_credentials(
+                    task_id=task_id,
+                    email=email,
+                    password=password,
+                    retry_mode=retry_mode,
+                )
                 if result.success:
                     db.update_task_status(task_id, "success", stage=result.stage)
                     with counter_lock:
@@ -1104,6 +1136,9 @@ class MainWindow(QMainWindow):
 
                 task_iter = iter(pending_tasks)
                 max_workers = max(1, config.concurrent_flows)
+                if config.choose_browser == "patchright":
+                    max_workers = 1
+                    logger.warning("Patchright 同步模式已强制限制为单线程，避免跨线程 greenlet 错误")
                 submitted_count = 0
 
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -1169,12 +1204,13 @@ class MainWindow(QMainWindow):
 
         return task
 
-    def _start_task(self) -> None:
+    def _start_task(self, show_popup: bool = False) -> None:
         if self.task_controller is not None:
             QMessageBox.information(self, "提示", "已有任务正在执行")
             return
 
-        self._save_form_to_config()
+        if not self._save_form_to_config(show_popup=show_popup):
+            return
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.task_controller = TaskThreadController(self._create_task_callable())
         self.task_controller.log_message.connect(self._append_log)

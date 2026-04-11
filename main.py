@@ -13,9 +13,14 @@ from runtime import RuntimeContext
 from utils import generate_strong_password, random_email
 
 
-def process_single_task(controller, task_id: int, email: str, password: str, db: TaskDB, runner: FlowRunner) -> FlowResult:
+def process_single_task(controller, task_id: int, email: str, password: str, retry_mode: str, db: TaskDB, runner: FlowRunner) -> FlowResult:
     db.update_task_status(task_id, "in_progress", stage=Stage.INIT.value)
-    result = runner.process_single_flow_with_credentials(task_id=task_id, email=email, password=password)
+    result = runner.process_single_flow_with_credentials(
+        task_id=task_id,
+        email=email,
+        password=password,
+        retry_mode=retry_mode,
+    )
     if result.success:
         db.update_task_status(task_id, "success", stage=result.stage)
         return result
@@ -69,13 +74,13 @@ def run_cli() -> None:
                 if not tasks:
                     break
                 task = tasks[0]
-                future = executor.submit(process_single_task, controller, task[0], task[1], task[2], db, runner)
+                future = executor.submit(process_single_task, controller, task[0], task[1], task[2], task[3], db, runner)
                 future_map[future] = task
 
             while future_map:
                 done_futures, _ = wait(future_map.keys(), return_when=FIRST_COMPLETED)
                 for future in done_futures:
-                    task_id, email, password = future_map.pop(future)
+                    task_id, email, password, retry_mode = future_map.pop(future)
                     try:
                         result = future.result()
                     except Exception as exc:
@@ -97,6 +102,7 @@ def run_cli() -> None:
                             next_task[0],
                             next_task[1],
                             next_task[2],
+                            next_task[3],
                             db,
                             runner,
                         )
