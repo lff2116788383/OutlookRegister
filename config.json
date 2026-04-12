@@ -21,6 +21,13 @@
             "https://graph.microsoft.com/Mail.Send",
             "https://graph.microsoft.com/User.Read"
         ],
+        "retry_attempts": 3,
+        "retry_interval_seconds": 8,
+        "initial_wait_seconds": 1,
+        "callback_timeout_handled_seconds": 18,
+        "callback_timeout_unhandled_seconds": 12,
+        "callback_timeout_retry_handled_seconds": 12,
+        "callback_timeout_retry_unhandled_seconds": 8,
         "dynamic_residential_proxy": {
             "enabled": false,
             "provider": "IPFoxy",

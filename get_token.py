@@ -148,22 +148,36 @@ def get_access_token(page, email: str, config: AppConfig):
     )
 
     auth_code = None
-    max_attempts = 3
+    max_attempts = config.oauth2.retry_attempts
+    retry_interval_ms = config.oauth2.retry_interval_seconds * 1000
+    initial_wait_ms = config.oauth2.initial_wait_seconds * 1000
+    callback_timeout_handled_ms = config.oauth2.callback_timeout_handled_seconds * 1000
+    callback_timeout_unhandled_ms = config.oauth2.callback_timeout_unhandled_seconds * 1000
+    callback_timeout_retry_handled_ms = config.oauth2.callback_timeout_retry_handled_seconds * 1000
+    callback_timeout_retry_unhandled_ms = config.oauth2.callback_timeout_retry_unhandled_seconds * 1000
     for attempt in range(1, max_attempts + 1):
         try:
             logger.info("Starting OAuth authorization attempt %s/%s for %s", attempt, max_attempts, email_address)
             page.goto(url, wait_until="domcontentloaded")
-            page.wait_for_timeout(1000)
+            page.wait_for_timeout(initial_wait_ms)
 
             handled = handle_oauth2_form(page, email, config)
-            callback_url = _wait_for_oauth_callback(page, redirect_url, timeout_ms=18000 if handled else 12000)
+            callback_url = _wait_for_oauth_callback(
+                page,
+                redirect_url,
+                timeout_ms=callback_timeout_handled_ms if handled else callback_timeout_unhandled_ms,
+            )
             if callback_url:
                 auth_code = _extract_auth_code_from_url(callback_url)
                 if auth_code:
                     break
 
             handled = handle_oauth2_form(page, email, config)
-            callback_url = _wait_for_oauth_callback(page, redirect_url, timeout_ms=12000 if handled else 8000)
+            callback_url = _wait_for_oauth_callback(
+                page,
+                redirect_url,
+                timeout_ms=callback_timeout_retry_handled_ms if handled else callback_timeout_retry_unhandled_ms,
+            )
             if callback_url:
                 auth_code = _extract_auth_code_from_url(callback_url)
                 if auth_code:
@@ -177,7 +191,7 @@ def get_access_token(page, email: str, config: AppConfig):
             logger.warning("OAuth authorization attempt %s failed for %s: %s", attempt, email_address, exc)
 
         if attempt < max_attempts:
-            page.wait_for_timeout(8000)
+            page.wait_for_timeout(retry_interval_ms)
 
     if not auth_code:
         return False, False, False

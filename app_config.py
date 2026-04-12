@@ -32,6 +32,13 @@ class OAuth2Config:
     client_id: str
     redirect_url: str
     scopes: List[str]
+    retry_attempts: int
+    retry_interval_seconds: int
+    initial_wait_seconds: int
+    callback_timeout_handled_seconds: int
+    callback_timeout_unhandled_seconds: int
+    callback_timeout_retry_handled_seconds: int
+    callback_timeout_retry_unhandled_seconds: int
     dynamic_residential_proxy: DynamicResidentialProxyConfig
 
 
@@ -128,6 +135,13 @@ class AppConfig:
                 client_id=oauth2.get("client_id", ""),
                 redirect_url=oauth2.get("redirect_url", ""),
                 scopes=list(oauth2.get("Scopes", [])),
+                retry_attempts=max(1, int(oauth2.get("retry_attempts", 3))),
+                retry_interval_seconds=max(0, int(oauth2.get("retry_interval_seconds", 8))),
+                initial_wait_seconds=max(0, int(oauth2.get("initial_wait_seconds", 1))),
+                callback_timeout_handled_seconds=max(1, int(oauth2.get("callback_timeout_handled_seconds", 18))),
+                callback_timeout_unhandled_seconds=max(1, int(oauth2.get("callback_timeout_unhandled_seconds", 12))),
+                callback_timeout_retry_handled_seconds=max(1, int(oauth2.get("callback_timeout_retry_handled_seconds", 12))),
+                callback_timeout_retry_unhandled_seconds=max(1, int(oauth2.get("callback_timeout_retry_unhandled_seconds", 8))),
                 dynamic_residential_proxy=DynamicResidentialProxyConfig(
                     enabled=bool(dynamic_proxy.get("enabled", False)),
                     provider=str(dynamic_proxy.get("provider", "IPFoxy") or "IPFoxy"),
@@ -197,6 +211,20 @@ class AppConfig:
                 errors.append("启用 OAuth2 时必须填写 Redirect URL")
             if not self.oauth2.scopes:
                 errors.append("启用 OAuth2 时至少需要一个 Scope")
+            if self.oauth2.retry_attempts < 1:
+                errors.append("OAuth2 重试次数至少为 1")
+            if self.oauth2.retry_interval_seconds < 0:
+                errors.append("OAuth2 重试间隔不能小于 0 秒")
+            if self.oauth2.initial_wait_seconds < 0:
+                errors.append("OAuth2 初始等待时间不能小于 0 秒")
+            if self.oauth2.callback_timeout_handled_seconds < 1:
+                errors.append("OAuth2 已处理回调等待时间不能小于 1 秒")
+            if self.oauth2.callback_timeout_unhandled_seconds < 1:
+                errors.append("OAuth2 未处理回调等待时间不能小于 1 秒")
+            if self.oauth2.callback_timeout_retry_handled_seconds < 1:
+                errors.append("OAuth2 二次已处理回调等待时间不能小于 1 秒")
+            if self.oauth2.callback_timeout_retry_unhandled_seconds < 1:
+                errors.append("OAuth2 二次未处理回调等待时间不能小于 1 秒")
 
         dynamic_proxy = self.oauth2.dynamic_residential_proxy
         if dynamic_proxy.enabled:
@@ -233,6 +261,13 @@ class AppConfig:
                 "client_id": self.oauth2.client_id,
                 "redirect_url": self.oauth2.redirect_url,
                 "Scopes": self.oauth2.scopes,
+                "retry_attempts": self.oauth2.retry_attempts,
+                "retry_interval_seconds": self.oauth2.retry_interval_seconds,
+                "initial_wait_seconds": self.oauth2.initial_wait_seconds,
+                "callback_timeout_handled_seconds": self.oauth2.callback_timeout_handled_seconds,
+                "callback_timeout_unhandled_seconds": self.oauth2.callback_timeout_unhandled_seconds,
+                "callback_timeout_retry_handled_seconds": self.oauth2.callback_timeout_retry_handled_seconds,
+                "callback_timeout_retry_unhandled_seconds": self.oauth2.callback_timeout_retry_unhandled_seconds,
                 "dynamic_residential_proxy": {
                     "enabled": self.oauth2.dynamic_residential_proxy.enabled,
                     "provider": self.oauth2.dynamic_residential_proxy.provider,
