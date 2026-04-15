@@ -18,12 +18,15 @@ TASK_DB_PATH = RESULTS_DIR / "tasks.db"
 class DynamicResidentialProxyConfig:
     enabled: bool
     provider: str
+    mode: str
     endpoint: str
+    api_url: str
     username: str
     password: str
     country: str
     session: str
     sticky_minutes: int
+
 
 
 @dataclass(slots=True)
@@ -144,8 +147,10 @@ class AppConfig:
                 callback_timeout_retry_unhandled_seconds=max(1, int(oauth2.get("callback_timeout_retry_unhandled_seconds", 8))),
                 dynamic_residential_proxy=DynamicResidentialProxyConfig(
                     enabled=bool(dynamic_proxy.get("enabled", False)),
-                    provider=str(dynamic_proxy.get("provider", "IPFoxy") or "IPFoxy"),
+                    provider=str(dynamic_proxy.get("provider", "Kookeey") or "Kookeey"),
+                    mode=str(dynamic_proxy.get("mode", "api") or "api").strip().lower(),
                     endpoint=str(dynamic_proxy.get("endpoint", "") or ""),
+                    api_url=str(dynamic_proxy.get("api_url", "") or ""),
                     username=str(dynamic_proxy.get("username", "") or ""),
                     password=str(dynamic_proxy.get("password", "") or ""),
                     country=str(dynamic_proxy.get("country", "") or ""),
@@ -230,16 +235,24 @@ class AppConfig:
         if dynamic_proxy.enabled:
             if not dynamic_proxy.provider.strip():
                 errors.append("启用动态住宅代理时必须填写代理提供商")
-            if not dynamic_proxy.endpoint.strip():
-                errors.append("启用动态住宅代理时必须填写代理地址")
-            endpoint_value = dynamic_proxy.endpoint.strip()
-            integrated_proxy = ("@" in endpoint_value and endpoint_value.count(":") >= 2) or endpoint_value.count(":") >= 3
-            if not integrated_proxy and not dynamic_proxy.username.strip():
-                errors.append("启用动态住宅代理时必须填写代理用户名")
-            if not integrated_proxy and not dynamic_proxy.password.strip():
-                errors.append("启用动态住宅代理时必须填写代理密码")
+            mode = str(dynamic_proxy.mode or "api").strip().lower()
+            if mode not in {"api", "direct"}:
+                errors.append("动态住宅代理模式仅支持 api 或 direct")
+            if mode == "api":
+                if not dynamic_proxy.api_url.strip():
+                    errors.append("API 提取模式必须填写代理提取链接")
+            else:
+                if not dynamic_proxy.endpoint.strip():
+                    errors.append("直连模式必须填写代理地址")
+                endpoint_value = dynamic_proxy.endpoint.strip()
+                integrated_proxy = ("@" in endpoint_value and endpoint_value.count(":") >= 2) or endpoint_value.count(":") >= 3
+                if not integrated_proxy and not dynamic_proxy.username.strip():
+                    errors.append("直连模式必须填写代理用户名")
+                if not integrated_proxy and not dynamic_proxy.password.strip():
+                    errors.append("直连模式必须填写代理密码")
             if dynamic_proxy.sticky_minutes < 1:
                 errors.append("动态住宅代理粘性时长至少为 1 分钟")
+
 
         if errors:
             raise ConfigValidationError(errors)
@@ -273,7 +286,9 @@ class AppConfig:
                 "dynamic_residential_proxy": {
                     "enabled": self.oauth2.dynamic_residential_proxy.enabled,
                     "provider": self.oauth2.dynamic_residential_proxy.provider,
+                    "mode": self.oauth2.dynamic_residential_proxy.mode,
                     "endpoint": self.oauth2.dynamic_residential_proxy.endpoint,
+                    "api_url": self.oauth2.dynamic_residential_proxy.api_url,
                     "username": self.oauth2.dynamic_residential_proxy.username,
                     "password": self.oauth2.dynamic_residential_proxy.password,
                     "country": self.oauth2.dynamic_residential_proxy.country,

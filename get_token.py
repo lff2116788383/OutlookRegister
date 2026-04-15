@@ -104,6 +104,9 @@ def _is_oauth_account_not_ready(page) -> bool:
         "找不到使用该用户名的帐户",
         "We couldn't find an account with that username",
         "This username may be incorrect",
+        "该 Microsoft 帐户不存在",
+        "That Microsoft account doesn't exist",
+        "请输入有效的电子邮件地址、电话号码或 Skype 用户名",
     ]
     for message in messages:
         try:
@@ -112,6 +115,7 @@ def _is_oauth_account_not_ready(page) -> bool:
         except Exception:
             continue
     return False
+
 
 
 def _wait_for_oauth_callback(page, redirect_url: str, timeout_ms: int = 15000) -> str | None:
@@ -148,13 +152,18 @@ def get_access_token(page, email: str, config: AppConfig):
     )
 
     auth_code = None
-    max_attempts = config.oauth2.retry_attempts
+    max_attempts = max(2, config.oauth2.retry_attempts)
     retry_interval_ms = config.oauth2.retry_interval_seconds * 1000
     initial_wait_ms = config.oauth2.initial_wait_seconds * 1000
     callback_timeout_handled_ms = config.oauth2.callback_timeout_handled_seconds * 1000
     callback_timeout_unhandled_ms = config.oauth2.callback_timeout_unhandled_seconds * 1000
     callback_timeout_retry_handled_ms = config.oauth2.callback_timeout_retry_handled_seconds * 1000
     callback_timeout_retry_unhandled_ms = config.oauth2.callback_timeout_retry_unhandled_seconds * 1000
+    account_ready_wait_ms = max(15000, retry_interval_ms)
+
+    logger.info("Waiting for newly registered account to propagate before OAuth for %s", email_address)
+    page.wait_for_timeout(account_ready_wait_ms)
+
     for attempt in range(1, max_attempts + 1):
         try:
             logger.info("Starting OAuth authorization attempt %s/%s for %s", attempt, max_attempts, email_address)
@@ -185,8 +194,11 @@ def get_access_token(page, email: str, config: AppConfig):
 
             if _is_oauth_account_not_ready(page):
                 logger.warning("OAuth account not ready yet for %s on attempt %s", email_address, attempt)
-            else:
-                logger.warning("OAuth redirect not reached for %s on attempt %s", email_address, attempt)
+                if attempt < max_attempts:
+                    page.wait_for_timeout(account_ready_wait_ms)
+                continue
+
+            logger.warning("OAuth redirect not reached for %s on attempt %s", email_address, attempt)
         except Exception as exc:
             logger.warning("OAuth authorization attempt %s failed for %s: %s", attempt, email_address, exc)
 
@@ -221,3 +233,4 @@ def get_access_token(page, email: str, config: AppConfig):
     access_token = payload.get("access_token", "")
     expire_at = datetime.now().timestamp() + payload["expires_in"]
     return refresh_token, access_token, expire_at
+

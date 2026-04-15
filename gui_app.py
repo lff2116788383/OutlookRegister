@@ -391,16 +391,20 @@ class MainWindow(QMainWindow):
         dynamic_proxy_form.setFormAlignment(Qt.AlignTop)
         self.dynamic_proxy_enabled = QCheckBox("启用动态住宅代理")
         self.dynamic_proxy_provider_input = QLineEdit()
-        self.dynamic_proxy_provider_input.setPlaceholderText("例如：IPFoxy")
+        self.dynamic_proxy_provider_input.setPlaceholderText("例如：Kookeey")
+        self.dynamic_proxy_mode_input = QComboBox()
+        self.dynamic_proxy_mode_input.addItems(["api", "direct"])
+        self.dynamic_proxy_api_url_input = QLineEdit()
+        self.dynamic_proxy_api_url_input.setPlaceholderText("模式一：填写 Kookeey pickdynamicips 提取链接")
         self.dynamic_proxy_endpoint_input = QLineEdit()
-        self.dynamic_proxy_endpoint_input.setPlaceholderText("支持 username:password@host:port、host:port 或 host:port:username:password")
+        self.dynamic_proxy_endpoint_input.setPlaceholderText("模式二：填写独享端口或 username:password@host:port")
         self.dynamic_proxy_username_input = QLineEdit()
-        self.dynamic_proxy_username_input.setPlaceholderText("可留空；使用一体化代理串时自动解析")
+        self.dynamic_proxy_username_input.setPlaceholderText("仅 direct 模式使用；一体化代理串可留空")
         self.dynamic_proxy_password_input = QLineEdit()
         self.dynamic_proxy_password_input.setEchoMode(QLineEdit.Password)
-        self.dynamic_proxy_password_input.setPlaceholderText("可留空；使用一体化代理串时自动解析")
+        self.dynamic_proxy_password_input.setPlaceholderText("仅 direct 模式使用；一体化代理串可留空")
         self.dynamic_proxy_country_input = QLineEdit()
-        self.dynamic_proxy_country_input.setPlaceholderText("可选，例如：us")
+        self.dynamic_proxy_country_input.setPlaceholderText("可选，例如：US")
         self.dynamic_proxy_session_input = QLineEdit()
         self.dynamic_proxy_session_input.setPlaceholderText("可选，会话标识")
         self.dynamic_proxy_sticky_minutes_input = QSpinBox()
@@ -408,14 +412,16 @@ class MainWindow(QMainWindow):
         self.dynamic_proxy_sticky_minutes_input.setValue(30)
         dynamic_proxy_form.addRow(self.dynamic_proxy_enabled)
         dynamic_proxy_form.addRow("代理服务商", self.dynamic_proxy_provider_input)
-        dynamic_proxy_form.addRow("代理入口", self.dynamic_proxy_endpoint_input)
-        dynamic_proxy_form.addRow("代理用户名", self.dynamic_proxy_username_input)
-        dynamic_proxy_form.addRow("代理密码", self.dynamic_proxy_password_input)
+        dynamic_proxy_form.addRow("代理模式", self.dynamic_proxy_mode_input)
+        dynamic_proxy_form.addRow("API 提取链接", self.dynamic_proxy_api_url_input)
+        dynamic_proxy_form.addRow("直连代理入口", self.dynamic_proxy_endpoint_input)
+        dynamic_proxy_form.addRow("直连代理用户名", self.dynamic_proxy_username_input)
+        dynamic_proxy_form.addRow("直连代理密码", self.dynamic_proxy_password_input)
         dynamic_proxy_form.addRow("国家代码", self.dynamic_proxy_country_input)
         dynamic_proxy_form.addRow("会话标识", self.dynamic_proxy_session_input)
         dynamic_proxy_form.addRow("粘性时长(分钟)", self.dynamic_proxy_sticky_minutes_input)
         dynamic_proxy_form.addRow(self.route_intercept_enabled)
-        dynamic_proxy_hint = QLabel("支持直接填写 IPFoxy 官方 username:password@host:port 代理串，也兼容 host:port:username:password；若使用完整代理串，用户名和密码可留空并会原样解析。动态住宅代理与路由拦截都属于代理流量策略，建议在这里统一配置。路由拦截当前仅阻止 image / media / font。")
+        dynamic_proxy_hint = QLabel("推荐使用 Kookeey 模式一（api）：直接填写 pickdynamicips 提取链接，程序会在每次取代理时自动拉取可用入口。只有在需要固定独享端口时，再切换到 direct 模式并填写直连代理入口/用户名/密码。动态住宅代理与路由拦截都属于代理流量策略，建议在这里统一配置。路由拦截当前仅阻止 image / media / font。")
         dynamic_proxy_hint.setWordWrap(True)
         dynamic_proxy_hint.setProperty("role", "sectionHint")
         dynamic_proxy_form.addRow(dynamic_proxy_hint)
@@ -456,8 +462,20 @@ class MainWindow(QMainWindow):
         self.client_id_visible_toggle.toggled.connect(
             lambda checked: self.client_id_input.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password)
         )
+        self.dynamic_proxy_mode_input.currentTextChanged.connect(self._sync_dynamic_proxy_mode_ui)
+        self._sync_dynamic_proxy_mode_ui(self.dynamic_proxy_mode_input.currentText())
+
+
+    def _sync_dynamic_proxy_mode_ui(self, mode: str) -> None:
+        normalized_mode = str(mode or "api").strip().lower()
+        is_api = normalized_mode == "api"
+        self.dynamic_proxy_api_url_input.setEnabled(is_api)
+        self.dynamic_proxy_endpoint_input.setEnabled(not is_api)
+        self.dynamic_proxy_username_input.setEnabled(not is_api)
+        self.dynamic_proxy_password_input.setEnabled(not is_api)
 
     def _build_console_tab(self) -> None:
+
         outer_layout = QVBoxLayout(self.console_tab)
         outer_layout.setContentsMargins(10, 10, 10, 10)
         outer_layout.setSpacing(0)
@@ -768,13 +786,17 @@ class MainWindow(QMainWindow):
         self.scopes_input.setPlainText("\n".join(config.oauth2.scopes))
         self.dynamic_proxy_enabled.setChecked(config.oauth2.dynamic_residential_proxy.enabled)
         self.dynamic_proxy_provider_input.setText(config.oauth2.dynamic_residential_proxy.provider)
+        self.dynamic_proxy_mode_input.setCurrentText(config.oauth2.dynamic_residential_proxy.mode)
+        self.dynamic_proxy_api_url_input.setText(config.oauth2.dynamic_residential_proxy.api_url)
         self.dynamic_proxy_endpoint_input.setText(config.oauth2.dynamic_residential_proxy.endpoint)
         self.dynamic_proxy_username_input.setText(config.oauth2.dynamic_residential_proxy.username)
         self.dynamic_proxy_password_input.setText(config.oauth2.dynamic_residential_proxy.password)
         self.dynamic_proxy_country_input.setText(config.oauth2.dynamic_residential_proxy.country)
         self.dynamic_proxy_session_input.setText(config.oauth2.dynamic_residential_proxy.session)
         self.dynamic_proxy_sticky_minutes_input.setValue(config.oauth2.dynamic_residential_proxy.sticky_minutes)
+        self._sync_dynamic_proxy_mode_ui(config.oauth2.dynamic_residential_proxy.mode)
         self.status_label.setText(f"已加载配置: {config_path or CONFIG_PATH}")
+
         if show_popup:
             QMessageBox.information(self, "重新加载完成", f"已重新加载配置:\n{config_path or CONFIG_PATH}")
 
@@ -815,7 +837,9 @@ class MainWindow(QMainWindow):
         config.oauth2.callback_timeout_retry_unhandled_seconds = self.oauth_callback_timeout_retry_unhandled_seconds_input.value()
         config.oauth2.scopes = scopes
         config.oauth2.dynamic_residential_proxy.enabled = self.dynamic_proxy_enabled.isChecked()
-        config.oauth2.dynamic_residential_proxy.provider = self.dynamic_proxy_provider_input.text().strip() or "IPFoxy"
+        config.oauth2.dynamic_residential_proxy.provider = self.dynamic_proxy_provider_input.text().strip() or "Kookeey"
+        config.oauth2.dynamic_residential_proxy.mode = self.dynamic_proxy_mode_input.currentText().strip().lower()
+        config.oauth2.dynamic_residential_proxy.api_url = self.dynamic_proxy_api_url_input.text().strip()
         config.oauth2.dynamic_residential_proxy.endpoint = self.dynamic_proxy_endpoint_input.text().strip()
         config.oauth2.dynamic_residential_proxy.username = self.dynamic_proxy_username_input.text().strip()
         config.oauth2.dynamic_residential_proxy.password = self.dynamic_proxy_password_input.text().strip()

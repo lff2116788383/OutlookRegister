@@ -1,6 +1,6 @@
 {
     "choose_browser": "playwright",
-    "email_domain": "hotmail.com",
+    "email_domain": "outlook.com",
     "proxy": "http://127.0.0.1:7897",
     "enable_route_intercept": false,
     "api_keys": {
@@ -10,7 +10,7 @@
     "bot_protection_wait": 22,
     "max_captcha_retries": 6,
     "concurrent_flows": 1,
-    "max_tasks": 5,
+    "max_tasks": 1,
     "oauth2": {
         "enable_oauth2": true,
         "client_id": "d2d1a406-11bb-4ab3-9b7d-719ae576702d",
@@ -24,19 +24,21 @@
         "retry_attempts": 1,
         "retry_interval_seconds": 8,
         "initial_wait_seconds": 0,
-        "callback_timeout_handled_seconds": 5,
-        "callback_timeout_unhandled_seconds": 7,
-        "callback_timeout_retry_handled_seconds": 10,
-        "callback_timeout_retry_unhandled_seconds": 8,
+        "callback_timeout_handled_seconds": 15,
+        "callback_timeout_unhandled_seconds": 15,
+        "callback_timeout_retry_handled_seconds": 15,
+        "callback_timeout_retry_unhandled_seconds": 15,
         "dynamic_residential_proxy": {
             "enabled": true,
-            "provider": "IPFoxy",
-            "endpoint": "gate-us.ipfoxy.io:58688:customer-UcmKU4timu-cc-US-st-NewYork-city-NewYork-sessid-1776245039_10000:hFts6JwqRel2bL1",
+            "provider": "Kookeey",
+            "mode": "api",
+            "endpoint": "",
+            "api_url": "https://www.kookeey.com/pickdynamicips?t=2&auth=pwd&format=4&n=1&p=http&gate=global&g=US&r=5&type=json&sign=faeea843a7077b8d090b93fb15ea2171&accessid=4941943&upf=1,5&dl=",
             "username": "",
             "password": "",
-            "country": "",
+            "country": "US",
             "session": "",
-            "sticky_minutes": 10
+            "sticky_minutes": 5
         }
     },
     "playwright": {
@@ -52,5 +54,5 @@
     "browser_pool": {
         "max_browsers": 1
     },
-    "info": "外层参数必须填写,内部参数可选。可启用无头浏览器；静态代理填在基础配置，动态住宅代理建议使用 IPFoxy 并在 OAuth2 下方单独配置；流量优化仅拦截 image/media/font 以节省代理流量，并在日志输出近似上传下载统计。"
+    "info": "外层参数必须填写,内部参数可选。可启用无头浏览器；静态代理填在基础配置，动态住宅代理推荐使用 Kookeey API 提取模式（pickdynamicips），程序会自动提取可用代理；流量优化仅拦截 image/media/font 以节省代理流量，并在日志输出近似上传下载统计。"
 }

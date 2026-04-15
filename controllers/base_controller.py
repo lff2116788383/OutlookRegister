@@ -260,7 +260,9 @@ class BaseBrowserController(ABC):
 
     def _submit_username_with_retries(self, page, email_input, next_btn, email: str) -> str:
         candidate = email
-        for attempt in range(4):
+        attempted_candidates = {candidate}
+
+        for attempt in range(6):
             self._clear_email_input(email_input)
             email_input.type(candidate, delay=0.006 * self.wait_time, timeout=10000)
             next_btn.click(timeout=5000, force=True)
@@ -272,15 +274,30 @@ class BaseBrowserController(ABC):
                 return candidate
 
             logger.warning("Username already taken: %s", build_email_address(candidate, self.config.email_domain))
-            suggested = self._apply_suggested_username(page)
-            if suggested:
-                candidate = suggested
-                continue
 
-            candidate = random_email()
-            logger.info("No suggested username available, retrying with regenerated prefix: %s", candidate)
+            if attempt == 0:
+                suggested = self._apply_suggested_username(page)
+                if suggested and suggested not in attempted_candidates:
+                    attempted_candidates.add(suggested)
+                    candidate = suggested
+                    continue
+
+            next_candidate = ""
+            for _ in range(10):
+                regenerated = generate_unique_email_prefix()
+                if regenerated not in attempted_candidates:
+                    next_candidate = regenerated
+                    break
+
+            if not next_candidate:
+                next_candidate = f"{generate_unique_email_prefix()}x{attempt}"
+
+            attempted_candidates.add(next_candidate)
+            candidate = next_candidate
+            logger.info("Retrying with regenerated unique prefix: %s", candidate)
 
         raise TimeoutError("Username remained unavailable after retries")
+
 
     def outlook_register(self, page, email, password) -> FlowResult:
         fake = Faker()

@@ -45,3 +45,12 @@ def generate_strong_password(length: int | None = None) -> str:
             and any(char in _PASSWORD_SPECIALS for char in password)
         ):
             return password
+
+
+def generate_unique_email_prefix(length: int = 6) -> str:
+    firstname = "".join(char for char in _FAKE.first_name().lower() if char.isalnum())
+    lastname = "".join(char for char in _FAKE.last_name().lower() if char.isalnum())
+    year = str(random.randint(1980, 2004))
+    suffix = "".join(secrets.choice(string.ascii_lowercase + string.digits) for _ in range(max(4, length)))
+    base = f"{firstname}{lastname}{year}{suffix}"
+    return base[:32]
