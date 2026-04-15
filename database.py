@@ -57,15 +57,17 @@ class TaskDB:
                 connection.execute("ALTER TABLE tasks ADD COLUMN risk_detected INTEGER NOT NULL DEFAULT 0")
             if not self._column_exists(connection, "retry_mode"):
                 connection.execute("ALTER TABLE tasks ADD COLUMN retry_mode TEXT NOT NULL DEFAULT 'full'")
+            connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_email_unique ON tasks(email)")
             connection.commit()
 
-    def create_task(self, email: str, password: str) -> None:
+    def create_task(self, email: str, password: str) -> bool:
         with self._lock, self._connect() as connection:
-            connection.execute(
-                "INSERT INTO tasks (email, password, status, error_code, error_message, stage, risk_detected, retry_mode) VALUES (?, ?, 'pending', '', '', '', 0, 'full')",
+            cursor = connection.execute(
+                "INSERT OR IGNORE INTO tasks (email, password, status, error_code, error_message, stage, risk_detected, retry_mode) VALUES (?, ?, 'pending', '', '', '', 0, 'full')",
                 (email, password),
             )
             connection.commit()
+            return int(cursor.rowcount or 0) > 0
 
     def get_pending_tasks(self, limit: int = 1) -> List[Tuple[int, str, str, str]]:
         with self._lock, self._connect() as connection:

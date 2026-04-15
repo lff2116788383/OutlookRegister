@@ -168,7 +168,7 @@ class AppConfig:
                 max_sms_wait_cycles=int(risk_control.get("max_sms_wait_cycles", 20)),
             ),
             browser_pool=BrowserPoolConfig(
-                max_browsers=max(1, int(browser_pool.get("max_browsers", min(int(data.get("concurrent_flows", 1)), 3))))
+                max_browsers=max(1, int(browser_pool.get("max_browsers", data.get("concurrent_flows", 1))))
             ),
             raw=data,
         )
@@ -232,9 +232,11 @@ class AppConfig:
                 errors.append("启用动态住宅代理时必须填写代理提供商")
             if not dynamic_proxy.endpoint.strip():
                 errors.append("启用动态住宅代理时必须填写代理地址")
-            if not dynamic_proxy.username.strip():
+            endpoint_value = dynamic_proxy.endpoint.strip()
+            integrated_proxy = ("@" in endpoint_value and endpoint_value.count(":") >= 2) or endpoint_value.count(":") >= 3
+            if not integrated_proxy and not dynamic_proxy.username.strip():
                 errors.append("启用动态住宅代理时必须填写代理用户名")
-            if not dynamic_proxy.password.strip():
+            if not integrated_proxy and not dynamic_proxy.password.strip():
                 errors.append("启用动态住宅代理时必须填写代理密码")
             if dynamic_proxy.sticky_minutes < 1:
                 errors.append("动态住宅代理粘性时长至少为 1 分钟")

@@ -13,6 +13,14 @@ from runtime import RuntimeContext
 from utils import generate_strong_password, random_email
 
 
+def _create_unique_task(db: TaskDB, max_attempts: int = 200) -> bool:
+    for _ in range(max_attempts):
+        if db.create_task(random_email(), generate_strong_password()):
+            return True
+    logger.warning("Unable to generate a unique email after %s attempts", max_attempts)
+    return False
+
+
 def process_single_task(controller, task_id: int, email: str, password: str, retry_mode: str, db: TaskDB, runner: FlowRunner) -> FlowResult:
     db.update_task_status(task_id, "in_progress", stage=Stage.INIT.value)
     result = runner.process_single_flow_with_credentials(
@@ -43,9 +51,12 @@ def initialize_tasks(db: TaskDB, config: AppConfig) -> None:
         return
 
     missing = config.max_tasks - total_existing
+    created = 0
     logger.info("Initializing %s new tasks in database", missing)
     for _ in range(missing):
-        db.create_task(random_email(), generate_strong_password())
+        if _create_unique_task(db):
+            created += 1
+    logger.info("Initialized %s/%s unique tasks in database", created, missing)
 
 
 def run_cli() -> None:

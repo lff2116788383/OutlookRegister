@@ -18,14 +18,7 @@ class PlaywrightController(BaseBrowserController):
             effective_proxy = proxy_manager.rotate_if_needed()
 
             playwright_instance = sync_playwright().start()
-            proxy_settings = (
-                {
-                    "server": effective_proxy,
-                    "bypass": "localhost",
-                }
-                if effective_proxy
-                else None
-            )
+            proxy_settings = proxy_manager.get_browser_proxy_settings()
 
             logger.info("Launching playwright browser (Proxy: %s)", effective_proxy or "None")
             browser_instance = playwright_instance.chromium.launch(

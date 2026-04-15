@@ -21,10 +21,23 @@ class ResultStore:
         with path.open("a", encoding="utf-8") as file:
             file.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
+    def _has_email_record(self, path: Path, email_address: str) -> bool:
+        if not path.exists():
+            return False
+
+        normalized_email = email_address.strip().lower()
+        for line in path.read_text(encoding="utf-8").splitlines():
+            record_email = line.split("----", 1)[0].strip().lower()
+            if record_email == normalized_email:
+                return True
+        return False
+
     def save_registered_email(self, email: str, password: str, oauth_enabled: bool, domain: str) -> None:
         file_path = LOGGED_EMAIL_PATH if oauth_enabled else UNLOGGED_EMAIL_PATH
         email_address = build_email_address(email, domain)
         with self._lock:
+            if self._has_email_record(file_path, email_address):
+                return
             with file_path.open("a", encoding="utf-8") as file:
                 file.write(f"{email_address}----{password}\n")
 
@@ -40,6 +53,8 @@ class ResultStore:
     ) -> None:
         email_address = build_email_address(email, domain)
         with self._lock:
+            if self._has_email_record(OUTLOOK_TOKEN_PATH, email_address):
+                return
             with OUTLOOK_TOKEN_PATH.open("a", encoding="utf-8") as file:
                 file.write(f"{email_address}----{password}----{client_id}----{refresh_token}\n")
 

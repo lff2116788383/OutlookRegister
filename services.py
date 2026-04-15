@@ -2,6 +2,7 @@ from __future__ import annotations
 import time
 from typing import Any, Dict
 from urllib.parse import urlsplit
+import urllib.request
 
 import requests
 from logger import logger
@@ -104,36 +105,94 @@ class ProxyManager:
         self.static_proxy = static_proxy
         self.dynamic_proxy_config = dynamic_proxy_config
 
-    def _build_ipfoxy_proxy(self):
+    def _parse_ipfoxy_proxy(self):
         if not self.dynamic_proxy_config or not self.dynamic_proxy_config.enabled:
-            return self.static_proxy
+            return None
 
         endpoint = self.dynamic_proxy_config.endpoint.strip()
         username = self.dynamic_proxy_config.username.strip()
         password = self.dynamic_proxy_config.password.strip()
         provider = self.dynamic_proxy_config.provider.strip() or "IPFoxy"
+        preserve_raw = False
+
+        if "@" in endpoint and endpoint.count(":") >= 2 and not username and not password:
+            credentials, host_part = endpoint.rsplit("@", 1)
+            if ":" in credentials:
+                username, password = credentials.split(":", 1)
+                endpoint = host_part
+                logger.info("已从 %s 官方代理串（username:password@host:port）中解析动态住宅代理配置", provider)
+        elif endpoint.count(":") >= 3 and not username and not password:
+            raw_proxy = endpoint
+            parts = endpoint.split(":")
+            endpoint = f"{parts[0]}:{parts[1]}"
+            username = parts[2]
+            password = ":".join(parts[3:])
+            preserve_raw = True
+            logger.info("已从 %s 一体化代理串中解析动态住宅代理配置，并保留原始代理格式", provider)
 
         if not endpoint or not username or not password:
             logger.warning("动态住宅代理已启用，但 %s 配置不完整，回退静态代理", provider)
-            return self.static_proxy
+            return None
 
-        session = self.dynamic_proxy_config.session.strip()
-        country = self.dynamic_proxy_config.country.strip().upper()
-        sticky_minutes = max(1, int(getattr(self.dynamic_proxy_config, "sticky_minutes", 30) or 30))
         proxy_username = username
-        tags = []
-        if country:
-            tags.append(f"cc-{country}")
-        if session:
-            tags.append(f"sessid-{session}")
-        if sticky_minutes:
-            tags.append(f"ttl-{sticky_minutes}")
-        if tags:
-            proxy_username = f"{username}-{'-'.join(tags)}"
+        if not preserve_raw:
+            session = self.dynamic_proxy_config.session.strip()
+            country = self.dynamic_proxy_config.country.strip().upper()
+            sticky_minutes = max(1, int(getattr(self.dynamic_proxy_config, "sticky_minutes", 30) or 30))
+            tags = []
+            if country and "-cc-" not in proxy_username:
+                tags.append(f"cc-{country}")
+            session_tag = session
+            if session_tag and sticky_minutes:
+                session_tag = f"{session_tag}_{sticky_minutes * 1000}"
+            if session_tag and "-sessid-" not in proxy_username:
+                tags.append(f"sessid-{session_tag}")
+            if sticky_minutes and "-ttl-" not in proxy_username:
+                tags.append(f"ttl-{sticky_minutes}")
+            if tags:
+                proxy_username = f"{username}-{'-'.join(tags)}"
 
-        proxy_url = f"http://{proxy_username}:{password}@{endpoint}"
-        logger.info("已启用 %s 动态住宅代理入口: %s", provider, endpoint)
-        return proxy_url
+        raw_proxy = f"{endpoint}:{proxy_username}:{password}" if preserve_raw else ""
+        url_proxy = f"http://{proxy_username}:{password}@{endpoint}"
+        logger.info("已启用 %s 动态住宅代理入口: %s，代理用户名: %s", provider, endpoint, proxy_username)
+        return {
+            "provider": provider,
+            "endpoint": endpoint,
+            "username": proxy_username,
+            "password": password,
+            "raw_proxy": raw_proxy,
+            "url_proxy": url_proxy,
+            "preserve_raw": preserve_raw,
+        }
+
+    def _build_ipfoxy_proxy(self):
+        parsed = self._parse_ipfoxy_proxy()
+        if not parsed:
+            return self.static_proxy
+        return parsed["raw_proxy"] if parsed["preserve_raw"] else parsed["url_proxy"]
+
+    def get_browser_proxy_settings(self):
+        proxy_url = self._build_ipfoxy_proxy()
+        if not proxy_url:
+            return None
+
+        if self.is_raw_integrated_proxy(proxy_url):
+            parts = proxy_url.split(":")
+            return {
+                "server": f"http://{parts[0]}:{parts[1]}",
+                "username": parts[2],
+                "password": ":".join(parts[3:]),
+                "bypass": "localhost",
+            }
+
+        return {
+            "server": proxy_url,
+            "bypass": "localhost",
+        }
+
+    @staticmethod
+    def is_raw_integrated_proxy(proxy_url: str) -> bool:
+        return bool(proxy_url and "://" not in proxy_url and "@" not in proxy_url and proxy_url.count(":") >= 3)
 
     def rotate_if_needed(self):
         return self._build_ipfoxy_proxy()
@@ -154,14 +213,19 @@ class ProxyManager:
         if not proxy_url:
             return result
 
-        proxies = {"http": proxy_url, "https": proxy_url}
-        split = urlsplit(proxy_url)
-        result["auth_ok"] = bool(split.username)
+        result["auth_ok"] = True if self.is_raw_integrated_proxy(proxy_url) else bool(urlsplit(proxy_url).username)
 
         try:
-            response = requests.get("https://ipinfo.io/json", proxies=proxies, timeout=timeout)
-            response.raise_for_status()
-            payload = response.json()
+            if self.is_raw_integrated_proxy(proxy_url):
+                proxy_handler = urllib.request.ProxyHandler({"https": proxy_url})
+                opener = urllib.request.build_opener(proxy_handler, urllib.request.HTTPHandler)
+                with opener.open("http://www.ip-api.com/json", timeout=timeout) as response:
+                    payload = __import__("json").loads(response.read().decode("utf-8", errors="replace"))
+            else:
+                proxies = {"http": proxy_url, "https": proxy_url}
+                response = requests.get("https://ipinfo.io/json", proxies=proxies, timeout=timeout)
+                response.raise_for_status()
+                payload = response.json()
             result["connect_ok"] = True
             result["ok"] = True
             result["ip"] = str(payload.get("ip", "") or "")
@@ -172,7 +236,7 @@ class ProxyManager:
                 expected_country = str(self.dynamic_proxy_config.country or "").strip().upper()
                 sticky_session = str(self.dynamic_proxy_config.session or "").strip()
             result["country_match"] = None if not expected_country else result["country"].upper() == expected_country
-            result["sticky_session"] = None if not sticky_session else "sessid-" in (split.username or "")
+            result["sticky_session"] = None if not sticky_session else "sessid-" in proxy_url
             result["message"] = "代理连通正常"
             return result
         except requests.HTTPError as exc:

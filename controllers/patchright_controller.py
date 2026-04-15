@@ -10,12 +10,9 @@ class PatchrightController(BaseBrowserController):
             pm = ProxyManager(self.proxy, self.dynamic_proxy_config)
             effective_proxy = pm.rotate_if_needed()
             
-            p = sync_playwright().start() 
+            p = sync_playwright().start()
 
-            proxy_settings = {
-                "server": effective_proxy,
-                "bypass": "localhost",
-            } if effective_proxy else None
+            proxy_settings = pm.get_browser_proxy_settings()
 
             logger.info(f"Launching patchright browser (Proxy: {effective_proxy or 'None'})")
             b = p.chromium.launch(

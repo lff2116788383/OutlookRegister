@@ -350,6 +350,9 @@ class MainWindow(QMainWindow):
         oauth_form.setFormAlignment(Qt.AlignTop)
         self.oauth_enabled = QCheckBox("启用 OAuth2")
         self.client_id_input = QLineEdit()
+        self.client_id_input.setEchoMode(QLineEdit.Password)
+        self.client_id_input.setPlaceholderText("OAuth Client ID")
+        self.client_id_visible_toggle = QCheckBox("显示 Client ID")
         self.redirect_url_input = QLineEdit()
         self.oauth_retry_attempts_input = QSpinBox()
         self.oauth_retry_attempts_input.setRange(1, 20)
@@ -370,6 +373,7 @@ class MainWindow(QMainWindow):
         self.scopes_input.setFixedHeight(180)
         oauth_form.addRow(self.oauth_enabled)
         oauth_form.addRow("Client ID", self.client_id_input)
+        oauth_form.addRow("显示设置", self.client_id_visible_toggle)
         oauth_form.addRow("Redirect URL", self.redirect_url_input)
         oauth_form.addRow("OAuth 重试次数", self.oauth_retry_attempts_input)
         oauth_form.addRow("OAuth 重试间隔(秒)", self.oauth_retry_interval_input)
@@ -389,12 +393,12 @@ class MainWindow(QMainWindow):
         self.dynamic_proxy_provider_input = QLineEdit()
         self.dynamic_proxy_provider_input.setPlaceholderText("例如：IPFoxy")
         self.dynamic_proxy_endpoint_input = QLineEdit()
-        self.dynamic_proxy_endpoint_input.setPlaceholderText("例如：gate.ipfoxy.com:12345")
+        self.dynamic_proxy_endpoint_input.setPlaceholderText("支持 username:password@host:port、host:port 或 host:port:username:password")
         self.dynamic_proxy_username_input = QLineEdit()
-        self.dynamic_proxy_username_input.setPlaceholderText("IPFoxy 用户名")
+        self.dynamic_proxy_username_input.setPlaceholderText("可留空；使用一体化代理串时自动解析")
         self.dynamic_proxy_password_input = QLineEdit()
         self.dynamic_proxy_password_input.setEchoMode(QLineEdit.Password)
-        self.dynamic_proxy_password_input.setPlaceholderText("IPFoxy 密码")
+        self.dynamic_proxy_password_input.setPlaceholderText("可留空；使用一体化代理串时自动解析")
         self.dynamic_proxy_country_input = QLineEdit()
         self.dynamic_proxy_country_input.setPlaceholderText("可选，例如：us")
         self.dynamic_proxy_session_input = QLineEdit()
@@ -411,7 +415,7 @@ class MainWindow(QMainWindow):
         dynamic_proxy_form.addRow("会话标识", self.dynamic_proxy_session_input)
         dynamic_proxy_form.addRow("粘性时长(分钟)", self.dynamic_proxy_sticky_minutes_input)
         dynamic_proxy_form.addRow(self.route_intercept_enabled)
-        dynamic_proxy_hint = QLabel("动态住宅代理与路由拦截都属于代理流量策略，建议在这里统一配置。路由拦截当前仅阻止 image / media / font。")
+        dynamic_proxy_hint = QLabel("支持直接填写 IPFoxy 官方 username:password@host:port 代理串，也兼容 host:port:username:password；若使用完整代理串，用户名和密码可留空并会原样解析。动态住宅代理与路由拦截都属于代理流量策略，建议在这里统一配置。路由拦截当前仅阻止 image / media / font。")
         dynamic_proxy_hint.setWordWrap(True)
         dynamic_proxy_hint.setProperty("role", "sectionHint")
         dynamic_proxy_form.addRow(dynamic_proxy_hint)
@@ -449,6 +453,9 @@ class MainWindow(QMainWindow):
         self.save_button.clicked.connect(self._save_form_to_config)
         self.reload_button.clicked.connect(self._load_config_to_form)
         self.prepare_button.clicked.connect(self._prepare_tasks)
+        self.client_id_visible_toggle.toggled.connect(
+            lambda checked: self.client_id_input.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password)
+        )
 
     def _build_console_tab(self) -> None:
         outer_layout = QVBoxLayout(self.console_tab)
@@ -818,18 +825,26 @@ class MainWindow(QMainWindow):
         return config
 
     def _save_form_to_config(self, show_popup: bool = True) -> bool:
-        config = self._build_config_from_form()
+        self.status_label.setText("正在保存配置...")
+        QApplication.processEvents()
+
         try:
+            config = self._build_config_from_form()
             config.validate()
+            config.save()
         except ConfigValidationError as exc:
-            QMessageBox.warning(self, "配置校验失败", "\n".join(exc.errors))
-            self.status_label.setText("配置校验失败")
+            message = "\n".join(exc.errors)
+            QMessageBox.warning(self, "配置校验失败", message)
+            self.status_label.setText(f"配置校验失败: {exc.errors[0] if exc.errors else '未知错误'}")
+            return False
+        except Exception as exc:
+            QMessageBox.critical(self, "保存失败", f"保存配置时发生异常:\n{exc}")
+            self.status_label.setText(f"保存配置失败: {exc}")
             return False
 
-        config.save()
         if show_popup:
             QMessageBox.information(self, "保存成功", f"配置已保存到:\n{CONFIG_PATH}")
-        self.status_label.setText("配置已保存")
+        self.status_label.setText(f"配置已保存: {CONFIG_PATH}")
         return True
 
     def _highlight_log_line(self, text: str) -> None:
@@ -1079,21 +1094,32 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "代理健康检查", "\n".join(lines))
         self.status_label.setText(f"代理检测完成: {result['message']}")
 
+    def _create_unique_task(self, db: TaskDB, max_attempts: int = 200) -> bool:
+        for _ in range(max_attempts):
+            if db.create_task(random_email(), generate_strong_password()):
+                return True
+        logger.warning("Unable to generate a unique email after %s attempts", max_attempts)
+        return False
+
     def _prepare_tasks(self) -> None:
+        self.status_label.setText("正在准备任务...")
+        QApplication.processEvents()
         if not self._save_form_to_config(show_popup=False):
             return
 
         config = AppConfig.load()
         db = TaskDB()
         db.clear_all_tasks()
+        created = 0
         for _ in range(config.max_tasks):
-            db.create_task(random_email(), generate_strong_password())
+            if self._create_unique_task(db):
+                created += 1
 
-        QMessageBox.information(self, "准备完成", f"任务库已重建，共生成 {config.max_tasks} 条任务")
-        self.status_label.setText(f"已初始化任务库，共 {config.max_tasks} 条")
-        self.metric_tasks_card.setText(f"任务池\n待执行 {config.max_tasks} / 运行中 0")
+        QMessageBox.information(self, "准备完成", f"任务库已重建，共生成 {created} 条唯一任务")
+        self.status_label.setText(f"已初始化任务库，共 {created} 条唯一任务")
+        self.metric_tasks_card.setText(f"任务池\n待执行 {created} / 运行中 0")
         self._refresh_result_files()
-        logger.info("Task database reinitialized from GUI")
+        logger.info("Task database reinitialized from GUI with %s unique tasks", created)
 
     def _create_task_callable(self):
         def task(is_cancelled) -> None:
@@ -1110,8 +1136,11 @@ class MainWindow(QMainWindow):
 
             pending_tasks = db.get_pending_tasks(limit=config.max_tasks)
             if not pending_tasks:
+                created = 0
                 for _ in range(config.max_tasks):
-                    db.create_task(random_email(), generate_strong_password())
+                    if self._create_unique_task(db):
+                        created += 1
+                logger.info("Auto-created %s unique tasks before start", created)
                 pending_tasks = db.get_pending_tasks(limit=config.max_tasks)
 
             success_count = 0
@@ -1244,6 +1273,8 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "提示", "已有任务正在执行")
             return
 
+        self.status_label.setText("正在启动任务...")
+        QApplication.processEvents()
         if not self._save_form_to_config(show_popup=show_popup):
             return
         self.log_path.parent.mkdir(parents=True, exist_ok=True)

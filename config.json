@@ -1,16 +1,16 @@
 {
     "choose_browser": "playwright",
-    "email_domain": "outlook.com",
+    "email_domain": "hotmail.com",
     "proxy": "http://127.0.0.1:7897",
-    "enable_route_intercept": true,
+    "enable_route_intercept": false,
     "api_keys": {
         "ezcaptcha": "",
         "sms_activate": ""
     },
-    "bot_protection_wait": 11,
-    "max_captcha_retries": 0,
+    "bot_protection_wait": 22,
+    "max_captcha_retries": 6,
     "concurrent_flows": 1,
-    "max_tasks": 1,
+    "max_tasks": 5,
     "oauth2": {
         "enable_oauth2": true,
         "client_id": "d2d1a406-11bb-4ab3-9b7d-719ae576702d",
@@ -21,22 +21,22 @@
             "https://graph.microsoft.com/Mail.Send",
             "https://graph.microsoft.com/User.Read"
         ],
-        "retry_attempts": 3,
+        "retry_attempts": 1,
         "retry_interval_seconds": 8,
-        "initial_wait_seconds": 1,
-        "callback_timeout_handled_seconds": 18,
-        "callback_timeout_unhandled_seconds": 12,
-        "callback_timeout_retry_handled_seconds": 12,
+        "initial_wait_seconds": 0,
+        "callback_timeout_handled_seconds": 5,
+        "callback_timeout_unhandled_seconds": 7,
+        "callback_timeout_retry_handled_seconds": 10,
         "callback_timeout_retry_unhandled_seconds": 8,
         "dynamic_residential_proxy": {
-            "enabled": false,
+            "enabled": true,
             "provider": "IPFoxy",
-            "endpoint": "",
+            "endpoint": "gate-us.ipfoxy.io:58688:customer-UcmKU4timu-cc-US-st-NewYork-city-NewYork-sessid-1776245039_10000:hFts6JwqRel2bL1",
             "username": "",
             "password": "",
             "country": "",
             "session": "",
-            "sticky_minutes": 33
+            "sticky_minutes": 10
         }
     },
     "playwright": {
@@ -44,10 +44,10 @@
         "headless": false
     },
     "risk_control": {
-        "max_consecutive_risk": 3,
-        "max_failure_streak": 5,
-        "max_task_duration_seconds": 180,
-        "max_sms_wait_cycles": 20
+        "max_consecutive_risk": 16,
+        "max_failure_streak": 9,
+        "max_task_duration_seconds": 181,
+        "max_sms_wait_cycles": 21
     },
     "browser_pool": {
         "max_browsers": 1
