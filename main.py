@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
-from app_config import AppConfig, ensure_runtime_dirs
+from account_io import export_token_accounts, load_email_accounts
+from app_config import AppConfig, OAUTH_TOKEN_ACCOUNTS_PATH, PENDING_OAUTH_ACCOUNTS_PATH, ensure_runtime_dirs
 from controller_factory import build_controller
 from database import TaskDB
 from execution_models import ErrorCode, FlowResult, RiskCircuitBreaker, Stage
 from flow_runner import FlowRunner
 from logger import logger
+from mam_client import build_microsoft_account_manager_client
+from oauth_account_runner import run_oauth_accounts
 from result_store import ResultStore
 from runtime import RuntimeContext
 from utils import generate_strong_password, random_email
@@ -19,6 +22,7 @@ def _create_unique_task(db: TaskDB, max_attempts: int = 200) -> bool:
             return True
     logger.warning("Unable to generate a unique email after %s attempts", max_attempts)
     return False
+
 
 
 def process_single_task(controller, task_id: int, email: str, password: str, retry_mode: str, db: TaskDB, runner: FlowRunner) -> FlowResult:
@@ -44,6 +48,7 @@ def process_single_task(controller, task_id: int, email: str, password: str, ret
     return result
 
 
+
 def initialize_tasks(db: TaskDB, config: AppConfig) -> None:
     stats = db.get_stats()
     total_existing = sum(stats.values())
@@ -59,13 +64,14 @@ def initialize_tasks(db: TaskDB, config: AppConfig) -> None:
     logger.info("Initialized %s/%s unique tasks in database", created, missing)
 
 
-def run_cli() -> None:
+
+def run_cli_register() -> None:
     config = AppConfig.load()
     config.validate()
     ensure_runtime_dirs()
     db = TaskDB()
 
-    logger.info("Starting OutlookRegister production mode")
+    logger.info("Starting OutlookRegister register-only mode")
     initialize_tasks(db, config)
     db.reset_in_progress_tasks()
     controller = build_controller(config)
@@ -126,7 +132,43 @@ def run_cli() -> None:
         controller.clean_up(type="all_browser")
         if circuit_breaker.should_stop():
             logger.warning("Execution stopped by risk circuit breaker: %s", circuit_breaker.stop_reason())
-        logger.info("OutlookRegister finished. Final stats: %s", db.get_stats())
+        logger.info("OutlookRegister register-only mode finished. Final stats: %s", db.get_stats())
+
+
+
+def run_cli_oauth() -> None:
+    config = AppConfig.load()
+    config.validate()
+    ensure_runtime_dirs()
+    accounts = load_email_accounts(PENDING_OAUTH_ACCOUNTS_PATH)
+    if not accounts:
+        logger.warning("No email accounts found in %s", PENDING_OAUTH_ACCOUNTS_PATH)
+        return
+
+    logger.info("Starting OAuth-only mode for %s accounts", len(accounts))
+    results = run_oauth_accounts(accounts)
+    success_accounts = [item.token_account for item in results if item.success and item.token_account is not None]
+    export_token_accounts(OAUTH_TOKEN_ACCOUNTS_PATH, success_accounts)
+
+    success_count = len(success_accounts)
+    failed_count = len(results) - success_count
+    logger.info("OAuth-only mode finished. success=%s failed=%s", success_count, failed_count)
+    for item in results:
+        if not item.success:
+            logger.warning("OAuth failed for %s: %s", item.email, item.error_message)
+
+    if success_accounts and config.microsoft_account_manager.enabled and config.microsoft_account_manager.upload_after_oauth:
+        client = build_microsoft_account_manager_client(config)
+        upload_result = client.upload_token_accounts(success_accounts)
+        if upload_result.ok:
+            logger.info("Uploaded token accounts to microsoft-account-manager: %s", upload_result.message)
+        else:
+            logger.warning("Failed to upload token accounts: %s", upload_result.message)
+
+
+
+def run_cli() -> None:
+    run_cli_register()
 
 
 if __name__ == "__main__":

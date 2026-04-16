@@ -24,12 +24,12 @@
         "retry_attempts": 1,
         "retry_interval_seconds": 8,
         "initial_wait_seconds": 0,
-        "callback_timeout_handled_seconds": 15,
+        "callback_timeout_handled_seconds": 14,
         "callback_timeout_unhandled_seconds": 15,
         "callback_timeout_retry_handled_seconds": 15,
         "callback_timeout_retry_unhandled_seconds": 15,
         "dynamic_residential_proxy": {
-            "enabled": true,
+            "enabled": false,
             "provider": "Kookeey",
             "mode": "api",
             "endpoint": "",
@@ -53,6 +53,14 @@
     },
     "browser_pool": {
         "max_browsers": 1
+    },
+    "microsoft_account_manager": {
+        "enabled": false,
+        "base_url": "",
+        "ingest_path": "/api/upload/ingest",
+        "ingest_token": "",
+        "upload_after_oauth": false,
+        "remark": "OutlookRegister OAuth2"
     },
     "info": "外层参数必须填写,内部参数可选。可启用无头浏览器；静态代理填在基础配置，动态住宅代理推荐使用 Kookeey API 提取模式（pickdynamicips），程序会自动提取可用代理；流量优化仅拦截 image/media/font 以节省代理流量，并在日志输出近似上传下载统计。"
 }

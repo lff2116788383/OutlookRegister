@@ -7,11 +7,13 @@ from typing import Any, Dict, List
 
 CONFIG_PATH = Path("config.json")
 RESULTS_DIR = Path("Results")
-LOGGED_EMAIL_PATH = RESULTS_DIR / "logged_email.txt"
-UNLOGGED_EMAIL_PATH = RESULTS_DIR / "unlogged_email.txt"
-OUTLOOK_TOKEN_PATH = RESULTS_DIR / "outlook_token.txt"
+PENDING_OAUTH_ACCOUNTS_PATH = RESULTS_DIR / "pending_oauth_accounts.txt"
+OAUTH_TOKEN_ACCOUNTS_PATH = RESULTS_DIR / "oauth_token_accounts.txt"
 APP_LOG_PATH = RESULTS_DIR / "app.log"
 TASK_DB_PATH = RESULTS_DIR / "tasks.db"
+LEGACY_LOGGED_EMAIL_PATH = RESULTS_DIR / "logged_email.txt"
+LEGACY_UNLOGGED_EMAIL_PATH = RESULTS_DIR / "unlogged_email.txt"
+LEGACY_OUTLOOK_TOKEN_PATH = RESULTS_DIR / "outlook_token.txt"
 
 
 @dataclass(slots=True)
@@ -77,6 +79,16 @@ class BrowserPoolConfig:
     max_browsers: int
 
 
+@dataclass(slots=True)
+class MicrosoftAccountManagerConfig:
+    enabled: bool
+    base_url: str
+    ingest_path: str
+    ingest_token: str
+    upload_after_oauth: bool
+    remark: str
+
+
 class ConfigValidationError(ValueError):
     def __init__(self, errors: List[str]):
         self.errors = errors
@@ -97,6 +109,7 @@ class AppConfig:
     playwright: PlaywrightConfig
     risk_control: RiskControlConfig
     browser_pool: BrowserPoolConfig
+    microsoft_account_manager: MicrosoftAccountManagerConfig
     raw: Dict[str, Any]
 
     @classmethod
@@ -110,6 +123,7 @@ class AppConfig:
         playwright = data.get("playwright", {})
         risk_control = data.get("risk_control", {})
         browser_pool = data.get("browser_pool", {})
+        microsoft_account_manager = data.get("microsoft_account_manager", {})
         proxy_value = data.get("proxy", "")
 
         if isinstance(proxy_value, dict):
@@ -174,6 +188,14 @@ class AppConfig:
             ),
             browser_pool=BrowserPoolConfig(
                 max_browsers=max(1, int(browser_pool.get("max_browsers", data.get("concurrent_flows", 1))))
+            ),
+            microsoft_account_manager=MicrosoftAccountManagerConfig(
+                enabled=bool(microsoft_account_manager.get("enabled", False)),
+                base_url=str(microsoft_account_manager.get("base_url", "") or ""),
+                ingest_path=str(microsoft_account_manager.get("ingest_path", "/api/upload/ingest") or "/api/upload/ingest"),
+                ingest_token=str(microsoft_account_manager.get("ingest_token", "") or ""),
+                upload_after_oauth=bool(microsoft_account_manager.get("upload_after_oauth", False)),
+                remark=str(microsoft_account_manager.get("remark", "OutlookRegister OAuth2") or "OutlookRegister OAuth2"),
             ),
             raw=data,
         )
@@ -254,6 +276,15 @@ class AppConfig:
                 errors.append("动态住宅代理粘性时长至少为 1 分钟")
 
 
+        mam = self.microsoft_account_manager
+        if mam.enabled:
+            if not mam.base_url.strip():
+                errors.append("启用 microsoft-account-manager 上传时必须填写 Base URL")
+            if not mam.ingest_path.strip():
+                errors.append("启用 microsoft-account-manager 上传时必须填写上传路径")
+            if not mam.ingest_token.strip():
+                errors.append("启用 microsoft-account-manager 上传时必须填写 Ingest Token")
+
         if errors:
             raise ConfigValidationError(errors)
 
@@ -309,6 +340,14 @@ class AppConfig:
             "browser_pool": {
                 "max_browsers": self.browser_pool.max_browsers,
             },
+            "microsoft_account_manager": {
+                "enabled": self.microsoft_account_manager.enabled,
+                "base_url": self.microsoft_account_manager.base_url,
+                "ingest_path": self.microsoft_account_manager.ingest_path,
+                "ingest_token": self.microsoft_account_manager.ingest_token,
+                "upload_after_oauth": self.microsoft_account_manager.upload_after_oauth,
+                "remark": self.microsoft_account_manager.remark,
+            },
             "info": self.raw.get(
                 "info",
                 "图形界面已启用，运行前请确认配置合法。",
@@ -322,3 +361,12 @@ class AppConfig:
 
 def ensure_runtime_dirs() -> None:
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    _migrate_legacy_result_file(LEGACY_UNLOGGED_EMAIL_PATH, PENDING_OAUTH_ACCOUNTS_PATH)
+    _migrate_legacy_result_file(LEGACY_OUTLOOK_TOKEN_PATH, OAUTH_TOKEN_ACCOUNTS_PATH)
+
+
+
+def _migrate_legacy_result_file(legacy_path: Path, target_path: Path) -> None:
+    if target_path.exists() or not legacy_path.exists():
+        return
+    target_path.write_text(legacy_path.read_text(encoding="utf-8"), encoding="utf-8")

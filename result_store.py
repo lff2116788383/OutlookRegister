@@ -6,7 +6,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Dict
 
-from app_config import LOGGED_EMAIL_PATH, OUTLOOK_TOKEN_PATH, RESULTS_DIR, UNLOGGED_EMAIL_PATH
+from app_config import OAUTH_TOKEN_ACCOUNTS_PATH, PENDING_OAUTH_ACCOUNTS_PATH, RESULTS_DIR
 from utils import build_email_address
 
 TASK_RESULTS_PATH = RESULTS_DIR / "task_results.jsonl"
@@ -33,7 +33,7 @@ class ResultStore:
         return False
 
     def save_registered_email(self, email: str, password: str, oauth_enabled: bool, domain: str) -> None:
-        file_path = LOGGED_EMAIL_PATH if oauth_enabled else UNLOGGED_EMAIL_PATH
+        file_path = PENDING_OAUTH_ACCOUNTS_PATH
         email_address = build_email_address(email, domain)
         with self._lock:
             if self._has_email_record(file_path, email_address):
@@ -53,9 +53,9 @@ class ResultStore:
     ) -> None:
         email_address = build_email_address(email, domain)
         with self._lock:
-            if self._has_email_record(OUTLOOK_TOKEN_PATH, email_address):
+            if self._has_email_record(OAUTH_TOKEN_ACCOUNTS_PATH, email_address):
                 return
-            with OUTLOOK_TOKEN_PATH.open("a", encoding="utf-8") as file:
+            with OAUTH_TOKEN_ACCOUNTS_PATH.open("a", encoding="utf-8") as file:
                 file.write(f"{email_address}----{password}----{client_id}----{refresh_token}\n")
 
     def save_task_result(self, payload: Dict[str, Any]) -> None:
@@ -82,8 +82,17 @@ class ResultStore:
 
         recent_results = results[-recent_limit:]
         total_recent = len(recent_results)
-        register_success = sum(1 for item in recent_results if str(item.get("stage", "")) == "post_register" and bool(item.get("success")))
-        oauth_success = sum(1 for item in recent_results if str(item.get("stage", "")) == "oauth" and bool(item.get("success")))
+        register_stage_results = [
+            item for item in recent_results if str(item.get("stage", "")) in {"post_register", "first_login"}
+        ]
+        oauth_stage_results = [
+            item for item in recent_results if str(item.get("stage", "")) == "oauth"
+        ]
+        register_success = sum(1 for item in register_stage_results if bool(item.get("success")))
+        register_failed = sum(1 for item in register_stage_results if not bool(item.get("success")))
+        oauth_success = sum(1 for item in oauth_stage_results if bool(item.get("success")))
+        register_total = len(register_stage_results)
+        oauth_total = len(oauth_stage_results)
         avg_duration_ms = int(sum(int(item.get("duration_ms", 0) or 0) for item in recent_results) / total_recent) if total_recent else 0
         risk_count = sum(1 for item in recent_results if bool(item.get("risk_detected")))
         total_upload_bytes = sum(int(item.get("request_bytes", 0) or 0) for item in recent_results)
@@ -100,8 +109,12 @@ class ResultStore:
 
         return {
             "recent_total": total_recent,
-            "register_success_rate": round((register_success / total_recent) * 100, 1) if total_recent else 0.0,
-            "oauth_success_rate": round((oauth_success / total_recent) * 100, 1) if total_recent else 0.0,
+            "register_total": register_total,
+            "register_success": register_success,
+            "register_failed": register_failed,
+            "register_success_rate": round((register_success / register_total) * 100, 1) if register_total else 0.0,
+            "oauth_total": oauth_total,
+            "oauth_success_rate": round((oauth_success / oauth_total) * 100, 1) if oauth_total else 0.0,
             "avg_duration_ms": avg_duration_ms,
             "risk_count": risk_count,
             "total_upload_bytes": total_upload_bytes,

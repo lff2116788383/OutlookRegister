@@ -125,6 +125,171 @@ class BaseBrowserController(ABC):
         logger.error("[%s] %s", error_code.value, message)
         return FlowResult.fail(error_code, message, stage, risk_detected=risk_detected)
 
+    def _is_first_login_ready(self, page) -> bool:
+        ready_selectors = [
+            '[aria-label="新邮件"]',
+            '[aria-label="New mail"]',
+            '[data-icon-name="ComposeRegular"]',
+            '[data-testid="m365-shell-header"]',
+            '#O365_NavHeader',
+            '[role="navigation"][aria-label*="Outlook"]',
+        ]
+        for selector in ready_selectors:
+            try:
+                locator = page.locator(selector)
+                if locator.count() > 0:
+                    locator.first.wait_for(state="visible", timeout=1200)
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _is_first_login_soft_ready(self, page) -> bool:
+        current_url = ""
+        try:
+            current_url = str(page.url or "")
+        except Exception:
+            current_url = ""
+
+        soft_ready_selectors = [
+            '[data-testid="app-shell"]',
+            '[data-testid="hero-banner"]',
+            '[data-testid="pivot-header"]',
+            '[role="main"]',
+            '[role="banner"]',
+            'button[title*="Outlook"]',
+            'button[aria-label*="Outlook"]',
+            'text="欢迎使用新版 Outlook"',
+            'text="Welcome to the new Outlook"',
+            'text="保持登录状态?"',
+            'text="Stay signed in?"',
+            'text="创建通行密钥"',
+            'text="Create a passkey"',
+        ]
+        for selector in soft_ready_selectors:
+            try:
+                locator = page.locator(selector)
+                if locator.count() > 0:
+                    locator.first.wait_for(state="visible", timeout=800)
+                    return True
+            except Exception:
+                continue
+
+        has_login_input = False
+        has_password_input = False
+        try:
+            has_login_input = page.locator('input[name="loginfmt"], #i0116').count() > 0
+        except Exception:
+            pass
+        try:
+            has_password_input = page.locator('input[name="passwd"], #i0118').count() > 0
+        except Exception:
+            pass
+
+        if not has_login_input and not has_password_input and any(host in current_url for host in [
+            'outlook.live.com',
+            'outlook.office.com',
+            'account.microsoft.com',
+            'login.live.com',
+        ]):
+            return True
+
+        return False
+
+    def _dismiss_first_login_prompts(self, page) -> None:
+        actions = [
+            ("无法创建通行密钥", "取消"),
+            ("Can’t create a passkey", "Cancel"),
+            ("创建通行密钥", "暂时跳过"),
+            ("Create a passkey", "Skip for now"),
+            ("欢迎使用新版 Outlook", "稍后"),
+            ("Welcome to the new Outlook", "Later"),
+            ("保持登录状态?", "否"),
+            ("Stay signed in?", "No"),
+        ]
+        for prompt_text, button_text in actions:
+            try:
+                if page.get_by_text(prompt_text).count() > 0 and page.get_by_text(button_text).count() > 0:
+                    page.get_by_text(button_text).first.click(timeout=4000)
+                    page.wait_for_timeout(800)
+            except Exception:
+                continue
+
+    def ensure_first_login_ready(self, page, email: str, password: str) -> FlowResult:
+        email_address = build_email_address(email, self.config.email_domain)
+        logger.info("Validating first login readiness for %s", email_address)
+        try:
+            if self._is_first_login_ready(page):
+                return FlowResult.ok(
+                    stage=Stage.FIRST_LOGIN.value,
+                    metadata={
+                        "first_login_confirmed": True,
+                        "email_address": email_address,
+                    },
+                )
+
+            page.goto("https://outlook.live.com/mail/0/", timeout=30000, wait_until="domcontentloaded")
+            page.wait_for_timeout(1500)
+
+            sign_in_candidates = [
+                'a[data-task="signin"]',
+                'a[href*="login.live.com"]',
+                'button[data-testid="hero-sign-in"]',
+                'text="登录"',
+                'text="Sign in"',
+            ]
+            for selector in sign_in_candidates:
+                try:
+                    locator = page.locator(selector)
+                    if locator.count() > 0:
+                        locator.first.click(timeout=5000, force=True)
+                        page.wait_for_timeout(1200)
+                        break
+                except Exception:
+                    continue
+
+            email_input = page.locator('input[name="loginfmt"], input[type="email"], #i0116')
+            if email_input.count() > 0:
+                email_input.first.wait_for(state="visible", timeout=15000)
+                email_input.first.fill(email_address, timeout=10000)
+                page.locator('#idSIButton9, button[type="submit"], input[type="submit"]').first.click(timeout=7000)
+                page.wait_for_timeout(1000)
+
+            password_input = page.locator('input[name="passwd"], input[type="password"], #i0118')
+            if password_input.count() > 0:
+                password_input.first.wait_for(state="visible", timeout=15000)
+                password_input.first.fill(password, timeout=10000)
+                page.locator('#idSIButton9, button[type="submit"], input[type="submit"]').first.click(timeout=7000)
+                page.wait_for_timeout(1500)
+
+            self._dismiss_first_login_prompts(page)
+
+            deadline = time.time() + 45
+            while time.time() < deadline:
+                self._dismiss_first_login_prompts(page)
+                if self._is_first_login_ready(page) or self._is_first_login_soft_ready(page):
+                    logger.info("First login confirmed for %s", email_address)
+                    return FlowResult.ok(
+                        stage=Stage.FIRST_LOGIN.value,
+                        metadata={
+                            "first_login_confirmed": True,
+                            "email_address": email_address,
+                        },
+                    )
+                page.wait_for_timeout(1000)
+
+            return self._fail(
+                ErrorCode.SELECTOR_NOT_FOUND,
+                f"First login confirmation timed out for {email_address}",
+                Stage.FIRST_LOGIN,
+            )
+        except Exception as exc:
+            return self._fail(
+                ErrorCode.UNKNOWN_ERROR,
+                f"First login confirmation failed for {email_address}: {exc}",
+                Stage.FIRST_LOGIN,
+            )
+
     def _first_visible_locator(self, page, candidates, timeout=20000):
         deadline = time.time() + timeout / 1000
         while time.time() < deadline:
@@ -506,37 +671,15 @@ class BaseBrowserController(ABC):
             self._log_traffic_stats(traffic_stats, email_address, "register")
         logger.info("Successfully registered: %s", email_address)
 
-        if not self.enable_oauth2:
-            return FlowResult.ok(
-                stage=Stage.POST_REGISTER.value,
-                metadata={
-                    "final_email": final_email,
-                    "email_address": email_address,
-                },
-            )
+        first_login_result = self.ensure_first_login_ready(page, final_email, password)
+        if not first_login_result.success:
+            return first_login_result
 
-        try:
-            cancel_btn = page.get_by_text("取消")
-            if cancel_btn.count() > 0:
-                cancel_btn.click(timeout=20000)
-
-            if page.get_by_text("无法创建通行密钥").count() > 0:
-                page.get_by_text("取消").click(timeout=7000)
-
-            page.locator('[aria-label="新邮件"]').wait_for(timeout=26000)
-            return FlowResult.ok(
-                stage=Stage.POST_REGISTER.value,
-                metadata={
-                    "final_email": final_email,
-                    "email_address": email_address,
-                },
-            )
-        except Exception as exc:
-            logger.warning("Registered %s but failed to enter inbox: %s", email_address, exc)
-            return FlowResult.ok(
-                stage=Stage.POST_REGISTER.value,
-                metadata={
-                    "final_email": final_email,
-                    "email_address": email_address,
-                },
-            )
+        return FlowResult.ok(
+            stage=Stage.POST_REGISTER.value,
+            metadata={
+                "final_email": final_email,
+                "email_address": email_address,
+                "first_login_confirmed": True,
+            },
+        )

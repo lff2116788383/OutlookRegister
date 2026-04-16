@@ -150,10 +150,25 @@ class FlowRunner:
                     message=f"邮箱注册成功: {final_email_address}",
                 )
 
-                if not self.controller.enable_oauth2:
-                    final_result = FlowResult.ok(stage=Stage.POST_REGISTER.value)
-                    self._save_final_result(task_id, final_email, final_result, started_at, traffic_stats)
-                    return final_result
+                if bool(result.metadata.get("first_login_confirmed")):
+                    self._log_event(
+                        task_id=task_id,
+                        email=final_email,
+                        stage=Stage.FIRST_LOGIN.value,
+                        status="success",
+                        message=f"首登确认成功: {final_email_address}",
+                    )
+
+                final_result = FlowResult.ok(
+                    stage=Stage.FIRST_LOGIN.value if bool(result.metadata.get("first_login_confirmed")) else Stage.POST_REGISTER.value,
+                    metadata={
+                        "final_email": final_email,
+                        "email_address": final_email_address,
+                        "first_login_confirmed": bool(result.metadata.get("first_login_confirmed")),
+                    },
+                )
+                self._save_final_result(task_id, final_email, final_result, started_at, traffic_stats)
+                return final_result
 
             token_result = get_access_token(page, final_email, self.context.config)
             if not token_result[0]:

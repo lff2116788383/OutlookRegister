@@ -106,6 +106,7 @@ class ProxyManager:
     def __init__(self, static_proxy=None, dynamic_proxy_config=None):
         self.static_proxy = static_proxy
         self.dynamic_proxy_config = dynamic_proxy_config
+        self._cached_dynamic_proxy = None
 
     @staticmethod
     def _normalize_proxy(raw_proxy: str) -> str:
@@ -257,8 +258,14 @@ class ProxyManager:
             logger.warning("动态住宅代理获取失败（%s/%s）：%s，回退静态代理", provider, mode, exc)
             return None
 
-    def _build_dynamic_proxy(self):
-        parsed = self._resolve_dynamic_proxy()
+    def _build_dynamic_proxy(self, *, refresh: bool = False):
+        if refresh:
+            self._cached_dynamic_proxy = None
+
+        if self._cached_dynamic_proxy is None:
+            self._cached_dynamic_proxy = self._resolve_dynamic_proxy()
+
+        parsed = self._cached_dynamic_proxy
         if not parsed:
             return self.static_proxy
         return parsed["raw_proxy"] if parsed.get("preserve_raw") else parsed["url_proxy"]
@@ -294,10 +301,10 @@ class ProxyManager:
         return bool(proxy_url and "://" not in proxy_url and "@" not in proxy_url and proxy_url.count(":") >= 3)
 
     def rotate_if_needed(self):
-        return self._build_dynamic_proxy()
+        return self._build_dynamic_proxy(refresh=True)
 
     def check_health(self, timeout: int = 15) -> Dict[str, Any]:
-        proxy_url = self._build_dynamic_proxy() or self.static_proxy
+        proxy_url = self._build_dynamic_proxy(refresh=True) or self.static_proxy
         result: Dict[str, Any] = {
             "ok": False,
             "proxy_url": proxy_url or "",

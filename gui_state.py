@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List
 
-from app_config import CONFIG_PATH, LOGGED_EMAIL_PATH, OUTLOOK_TOKEN_PATH, RESULTS_DIR, UNLOGGED_EMAIL_PATH
+from app_config import CONFIG_PATH, OAUTH_TOKEN_ACCOUNTS_PATH, PENDING_OAUTH_ACCOUNTS_PATH, RESULTS_DIR
 
 
 @dataclass(slots=True)
@@ -14,9 +14,8 @@ class ResultFileEntry:
 
 
 RESULT_FILES: List[ResultFileEntry] = [
-    ResultFileEntry(label="已记录邮箱", path=LOGGED_EMAIL_PATH),
-    ResultFileEntry(label="未初始化邮箱", path=UNLOGGED_EMAIL_PATH),
-    ResultFileEntry(label="OAuth2 Token", path=OUTLOOK_TOKEN_PATH),
+    ResultFileEntry(label="待 OAuth2 邮箱账号", path=PENDING_OAUTH_ACCOUNTS_PATH),
+    ResultFileEntry(label="OAuth2 Token 账号", path=OAUTH_TOKEN_ACCOUNTS_PATH),
 ]
 
 DEFAULT_LOG_PATH = RESULTS_DIR / "app.log"

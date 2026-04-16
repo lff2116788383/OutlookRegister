@@ -32,6 +32,7 @@ class Stage(str, Enum):
     SMS_VERIFICATION = "sms_verification"
     CAPTCHA = "captcha"
     POST_REGISTER = "post_register"
+    FIRST_LOGIN = "first_login"
     OAUTH = "oauth"
 
 
